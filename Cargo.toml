@@ -1,0 +1,23 @@
+[package]
+name = "solitarite"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A full-featured Klondike solitaire game built with Rust and GPUI"
+license = "MIT"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+gpui = "0.2.2"
+# Keep libc below 0.2.187: the xattr 0.2.3 dependency used by GPUI's HTTP
+# client still references the Linux ENOATTR constant that newer libc removed.
+libc = "=0.2.186"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
