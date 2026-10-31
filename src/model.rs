@@ -962,6 +962,31 @@ mod tests {
     }
 
     #[test]
+    fn draw_three_does_not_replace_a_played_waste_card() {
+        let mut game = Game::new(
+            7,
+            Rules {
+                draw_three: true,
+                ..Rules::default()
+            },
+            false,
+        );
+        game.stock = vec![Card::new(42, Suit::Clubs, Rank::Four, false)];
+        game.waste = vec![
+            Card::new(0, Suit::Spades, Rank::Ace, true),
+            Card::new(14, Suit::Hearts, Rank::Two, true),
+            Card::new(2, Suit::Spades, Rank::Three, true),
+        ];
+        game.tableau[0] = vec![Card::new(16, Suit::Hearts, Rank::Four, true)];
+
+        assert!(game.try_move(PileRef::Waste, 2, PileRef::Tableau(0), false));
+        assert_eq!(game.stock.len(), 1);
+        assert_eq!(game.waste.len(), 2);
+        assert_eq!(game.waste[0].id, 0);
+        assert_eq!(game.waste[1].id, 14);
+    }
+
+    #[test]
     fn recycling_preserves_draw_order() {
         let mut game = Game::new(
             123,
