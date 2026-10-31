@@ -518,17 +518,6 @@ impl Game {
             PileRef::Waste => unreachable!(),
         }
 
-        // Keep the three-card waste fan topped up when a playable waste card
-        // is taken. This variant draws one replacement from stock; it does
-        // not recycle the stock automatically when the stock runs out.
-        if matches!(source, PileRef::Waste)
-            && self.rules.draw_three
-            && let Some(mut card) = self.stock.pop()
-        {
-            card.face_up = true;
-            self.waste.push(card);
-        }
-
         if let PileRef::Tableau(pile) = source
             && let Some(top) = self.tableau[pile].last_mut()
             && !top.face_up
@@ -970,37 +959,6 @@ mod tests {
         );
         assert!(three.draw());
         assert_eq!(three.waste.len(), 3);
-    }
-
-    #[test]
-    fn draw_three_refills_waste_when_a_card_is_played() {
-        let mut game = Game::new(
-            7,
-            Rules {
-                draw_three: true,
-                ..Rules::default()
-            },
-            false,
-        );
-        game.stock = vec![Card::new(42, Suit::Clubs, Rank::Four, false)];
-        game.waste = vec![
-            Card::new(0, Suit::Spades, Rank::Ace, true),
-            Card::new(14, Suit::Hearts, Rank::Two, true),
-            Card::new(2, Suit::Spades, Rank::Three, true),
-        ];
-        game.tableau[0] = vec![Card::new(16, Suit::Hearts, Rank::Four, true)];
-
-        assert!(game.try_move(PileRef::Waste, 2, PileRef::Tableau(0), false));
-        assert!(game.stock.is_empty());
-        assert_eq!(game.waste.len(), 3);
-        assert_eq!(game.waste[2].id, 42);
-        assert!(game.waste[2].face_up);
-
-        assert!(game.undo());
-        assert_eq!(game.stock.len(), 1);
-        assert_eq!(game.stock[0].id, 42);
-        assert_eq!(game.waste.len(), 3);
-        assert_eq!(game.waste[2].id, 2);
     }
 
     #[test]
