@@ -1228,6 +1228,14 @@ impl SolitaireApp {
                     .flex()
                     .items_center()
                     .gap(px(9.0))
+                    // The brand area is inert, so it doubles as a drag handle
+                    // on Linux window managers.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _: &MouseDownEvent, window, _| {
+                            window.start_window_move();
+                        }),
+                    )
                     .child(
                         div()
                             .w(px(22.0))
@@ -1263,6 +1271,55 @@ impl SolitaireApp {
             ))
             .child(menu_button("menu-help", "Help", MenuKind::Help, cx))
             .child(right)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .ml(px(10.0))
+                    .child(
+                        div()
+                            .id("window-minimize")
+                            .w(px(30.0))
+                            .h(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .cursor(CursorStyle::PointingHand)
+                            .hover(|this| this.bg(rgba(0xffffff18)))
+                            .on_click(cx.listener(|_, _, window, _| window.minimize_window()))
+                            .child("−"),
+                    )
+                    .child(
+                        div()
+                            .id("window-maximize")
+                            .w(px(30.0))
+                            .h(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .cursor(CursorStyle::PointingHand)
+                            .hover(|this| this.bg(rgba(0xffffff18)))
+                            .on_click(cx.listener(|_, _, window, _| window.zoom_window()))
+                            .child("□"),
+                    )
+                    .child(
+                        div()
+                            .id("window-close")
+                            .w(px(30.0))
+                            .h(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .cursor(CursorStyle::PointingHand)
+                            .hover(|this| this.bg(rgb(0xd94b4b)).text_color(rgb(0xffffff)))
+                            .on_click(cx.listener(|this, _, _, cx| this.quit(cx)))
+                            .child("×"),
+                    ),
+            )
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
