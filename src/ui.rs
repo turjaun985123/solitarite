@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Local};
 use gpui::{
@@ -7,8 +8,13 @@ use gpui::{
     Stateful, Window, actions, div, linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
 };
 
-use crate::cards::{DragGhost, card_back, card_label, card_view};
+use crate::audio::Sound;
+use crate::cards::{
+    DragGhost, GHOST_SCALE, GHOST_STEP, card_back, card_label, card_view, flip_card,
+};
 use crate::model::{Card, Game, Hint, PileRef, Rules, Scoring, format_score, format_time};
+use crate::motion::{self, Flight, Layout, Pose, Style};
+use crate::perf::PerfStats;
 use crate::persistence::{self, CardBack, SaveData, Settings, Stats, Theme, save_path_display};
 use crate::theme::{Fade as _, Palette, card_red, gold, overlay};
 
@@ -29,6 +35,7 @@ actions!(
         DrawCards,
         Dismiss,
         QuitApp,
+        TogglePerf,
     ]
 );
 
@@ -69,6 +76,29 @@ struct DragCards {
     source: PileRef,
     index: usize,
     cards: Vec<Card>,
+    /// Every pile this run could legally be dropped on, so those piles can
+    /// glow while the card is in the air.
+    valid: Vec<PileRef>,
+}
+
+/// A drag in progress: the dragged run plus where the mouse holds it.
+#[derive(Clone)]
+struct ActiveDrag {
+    drag: DragCards,
+    grab: (f32, f32),
+}
+
+/// A card currently travelling in the flight overlay.
+#[derive(Clone, Copy)]
+struct ActiveFlight {
+    serial: u64,
+    flight: Flight,
+    ends_at: Instant,
+}
+
+fn mouse_pos(window: &Window) -> (f32, f32) {
+    let position = window.mouse_position();
+    (position.x.into(), position.y.into())
 }
 
 pub struct SolitaireApp {
@@ -83,8 +113,20 @@ pub struct SolitaireApp {
     toast: Option<SharedString>,
     toast_gen: u64,
     auto_finishing: bool,
-    deal_serial: u64,
     win_recorded: bool,
+    /// Cards currently in flight. Their resting copies are hidden meanwhile.
+    flights: Vec<ActiveFlight>,
+    flight_serial: u64,
+    /// The run being dragged by the mouse, if any.
+    drag: Option<ActiveDrag>,
+    /// Board-space position of the dragged ghost at the moment of a drop, so
+    /// the card flies on from where it was released instead of its source.
+    drop_origin: Option<(f32, f32)>,
+    /// Window size seen by the last render; needed to lay out cards outside
+    /// of `render` when planning animations.
+    viewport: Cell<(f32, f32)>,
+    perf: RefCell<PerfStats>,
+    show_perf: bool,
 }
 
 impl SolitaireApp {
@@ -102,8 +144,17 @@ impl SolitaireApp {
             toast: None,
             toast_gen: 0,
             auto_finishing: false,
-            deal_serial: 0,
             win_recorded: false,
+            flights: Vec::new(),
+            flight_serial: 0,
+            drag: None,
+            drop_origin: None,
+            viewport: Cell::new({
+                let size = window.viewport_size();
+                (size.width.into(), size.height.into())
+            }),
+            perf: RefCell::new(PerfStats::new()),
+            show_perf: false,
         };
 
         if let Some(game) = data.game.filter(|game| game.is_valid() && !game.won) {
@@ -116,6 +167,8 @@ impl SolitaireApp {
             app.game = Game::new(seed, app.settings.rules, false);
             app.stats.record_game_started();
             app.save_now();
+            app.play_sound(Sound::Shuffle);
+            app.animate_deal(cx);
         }
 
         window.set_window_title("Solitarite — Klondike Solitaire");
@@ -197,7 +250,8 @@ impl SolitaireApp {
         self.selected = None;
         self.hint = None;
         self.win_recorded = false;
-        self.deal_serial = self.deal_serial.wrapping_add(1);
+        self.flights.clear();
+        self.drag = None;
 
         let toast = match kind {
             NewKind::Restart => {
@@ -225,6 +279,8 @@ impl SolitaireApp {
 
         self.save_now();
         self.toast(toast, cx);
+        self.play_sound(Sound::Shuffle);
+        self.animate_deal(cx);
         cx.notify();
     }
 
@@ -236,7 +292,9 @@ impl SolitaireApp {
             self.selected = None;
             self.hint = None;
             self.win_recorded = false;
-            self.deal_serial = self.deal_serial.wrapping_add(1);
+            self.flights.clear();
+            self.play_sound(Sound::Shuffle);
+            self.animate_deal(cx);
             self.toast("Rules applied to this deal", cx);
         } else {
             self.toast("New rules apply to the next deal", cx);
@@ -281,6 +339,224 @@ impl SolitaireApp {
         cx.notify();
     }
 
+    fn toggle_sound_effects(&mut self, cx: &mut Context<Self>) {
+        self.settings.sound_effects = !self.settings.sound_effects;
+        self.save_now();
+        self.play_sound(Sound::Place);
+        self.toast(
+            if self.settings.sound_effects {
+                "Sound effects enabled"
+            } else {
+                "Sound effects muted"
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn toggle_animations(&mut self, cx: &mut Context<Self>) {
+        self.settings.animations = !self.settings.animations;
+        if !self.settings.animations {
+            self.flights.clear();
+        }
+        self.save_now();
+        self.toast(
+            if self.settings.animations {
+                "Card animations on"
+            } else {
+                "Card animations off"
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn set_volume(&mut self, volume: f32, cx: &mut Context<Self>) {
+        let volume = ((volume.clamp(0.0, 1.0)) * 10.0).round() / 10.0;
+        self.settings.volume = volume;
+        self.save_now();
+        // Audition the new level with a card snap.
+        self.play_sound(Sound::Place);
+        cx.notify();
+    }
+
+    fn toggle_perf(&mut self, cx: &mut Context<Self>) {
+        self.show_perf = !self.show_perf;
+        cx.notify();
+    }
+
+    fn play_sound(&self, sound: Sound) {
+        if self.settings.sound_effects {
+            crate::audio::play(sound, self.settings.volume);
+        }
+    }
+
+    /// Play `sound` after `delay_ms` (immediately when zero), e.g. so a card's
+    /// snap is heard when it lands rather than when it was clicked.
+    fn play_sound_after(&self, delay_ms: u64, sound: Sound, cx: &mut Context<Self>) {
+        if delay_ms == 0 {
+            self.play_sound(sound);
+            return;
+        }
+        cx.spawn(async move |weak, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(delay_ms))
+                .await;
+            let _ = weak.update(cx, |this, _| this.play_sound(sound));
+        })
+        .detach();
+    }
+
+    // ------------------------------------------------------------------
+    // Card motion
+    // ------------------------------------------------------------------
+
+    fn current_layout(&self) -> Layout {
+        let (vw, vh) = self.viewport.get();
+        Layout::compute(vw, vh, &self.game)
+    }
+
+    /// Where every card is drawn right now.
+    fn pose_snapshot(&self) -> Vec<Pose> {
+        motion::poses(&self.game, &self.current_layout())
+    }
+
+    /// Board-space top-left of the first dragged card for a mouse position in
+    /// window space, matching where the drag ghost is painted.
+    fn ghost_origin(&self, mouse: (f32, f32), grab: (f32, f32)) -> (f32, f32) {
+        let layout = self.current_layout();
+        let (vw, vh) = self.viewport.get();
+        let (origin_x, origin_y) = layout.board_origin(vw, vh);
+        (
+            mouse.0 - grab.0 * GHOST_SCALE - origin_x,
+            mouse.1 - grab.1 * GHOST_SCALE - origin_y,
+        )
+    }
+
+    /// Re-pose `ids` as a dragged run whose first card sits at `origin`.
+    fn lift_to_ghost(&self, poses: &mut [Pose], ids: &[u8], origin: (f32, f32)) {
+        let step = self.current_layout().ch * GHOST_STEP * GHOST_SCALE;
+        for (offset, id) in ids.iter().enumerate() {
+            if let Some(pose) = poses.iter_mut().find(|pose| pose.card.id == *id) {
+                pose.x = origin.0;
+                pose.y = origin.1 + step * offset as f32;
+            }
+        }
+    }
+
+    /// Animate from `before` to the current state of the game. Returns how
+    /// many milliseconds until the first card lands (0 when nothing animates).
+    fn animate_from(&mut self, before: Vec<Pose>, style: Style, cx: &mut Context<Self>) -> u64 {
+        if !self.settings.animations {
+            return 0;
+        }
+        let after = self.pose_snapshot();
+        let flights = motion::plan(&before, &after, style);
+        self.start_flights(flights, cx)
+    }
+
+    /// Fly every tableau card out of the stock, like a real deal.
+    fn animate_deal(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.animations {
+            return;
+        }
+        let flights = motion::deal_plan(&self.game, &self.current_layout());
+        self.start_flights(flights, cx);
+    }
+
+    fn start_flights(&mut self, flights: Vec<Flight>, cx: &mut Context<Self>) -> u64 {
+        if flights.is_empty() {
+            return 0;
+        }
+        self.flight_serial = self.flight_serial.wrapping_add(1);
+        let serial = self.flight_serial;
+        let now = Instant::now();
+
+        // A card that is moved again mid-flight is re-launched from its rest
+        // position; every other card in flight keeps going undisturbed.
+        for flight in &flights {
+            self.flights
+                .retain(|active| active.flight.card.id != flight.card.id);
+        }
+
+        let mut first_move_ms = f32::MAX;
+        let mut first_any_ms = f32::MAX;
+        let mut last_end_ms = 0.0f32;
+        for flight in flights {
+            let end = flight.total_ms();
+            first_any_ms = first_any_ms.min(end);
+            if flight.moves() {
+                first_move_ms = first_move_ms.min(end);
+            }
+            last_end_ms = last_end_ms.max(end);
+            self.flights.push(ActiveFlight {
+                serial,
+                flight,
+                ends_at: now + Duration::from_millis(end.ceil() as u64),
+            });
+        }
+
+        let wait = last_end_ms.ceil() as u64 + 60;
+        cx.spawn(async move |weak, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(wait))
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                let now = Instant::now();
+                this.flights.retain(|active| active.ends_at > now);
+                cx.notify();
+            });
+        })
+        .detach();
+
+        if first_move_ms < f32::MAX {
+            first_move_ms as u64
+        } else {
+            first_any_ms as u64
+        }
+    }
+
+    fn is_flying(&self, id: u8) -> bool {
+        self.flights
+            .iter()
+            .any(|active| active.flight.card.id == id)
+    }
+
+    fn is_drag_source(&self, id: u8) -> bool {
+        self.drag
+            .as_ref()
+            .is_some_and(|active| active.drag.cards.iter().any(|card| card.id == id))
+    }
+
+    /// Resting cards are hidden while their flying copy is in the air, and
+    /// while the mouse is holding them.
+    fn is_card_hidden(&self, id: u8) -> bool {
+        self.is_flying(id) || self.is_drag_source(id)
+    }
+
+    fn is_drop_target(&self, pile: PileRef) -> bool {
+        self.drag
+            .as_ref()
+            .is_some_and(|active| active.drag.valid.contains(&pile))
+    }
+
+    fn flight_remaining_ms(&self) -> u64 {
+        let now = Instant::now();
+        self.flights
+            .iter()
+            .map(|active| active.ends_at.saturating_duration_since(now).as_millis() as u64)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn begin_drag(&mut self, drag: DragCards, grab: (f32, f32), cx: &mut Context<Self>) {
+        self.drag = Some(ActiveDrag { drag, grab });
+        self.selected = None;
+        self.hint = None;
+        self.play_sound(Sound::Pickup);
+        cx.notify();
+    }
+
     fn cycle_theme(&mut self, cx: &mut Context<Self>) {
         self.settings.theme = self.settings.theme.next();
         self.save_now();
@@ -297,7 +573,15 @@ impl SolitaireApp {
         if !self.interaction_enabled() || !self.game.can_draw() {
             return;
         }
+        let before = self.pose_snapshot();
+        let recycling = self.game.stock.is_empty();
         if self.game.draw() {
+            self.play_sound(if recycling {
+                Sound::Recycle
+            } else {
+                Sound::Deal
+            });
+            self.animate_from(before, Style::Travel, cx);
             self.selected = None;
             self.hint = None;
             self.after_action(cx);
@@ -314,14 +598,49 @@ impl SolitaireApp {
         if !self.interaction_enabled() {
             return;
         }
+        let reveals_card = match source {
+            PileRef::Tableau(pile) if index > 0 => self.game.tableau[pile]
+                .get(index - 1)
+                .is_some_and(|card| !card.face_up),
+            _ => false,
+        };
+        // Snapshot first; if the card was dropped from a drag, it starts its
+        // flight where the mouse released it rather than at its old pile.
+        let mut before = self.pose_snapshot();
+        let dragged_from = self.drop_origin.take();
+        if let Some(origin) = dragged_from {
+            let ids: Vec<u8> = self
+                .game
+                .cards_at(source, index)
+                .map(|cards| cards.iter().map(|card| card.id).collect())
+                .unwrap_or_default();
+            self.lift_to_ghost(&mut before, &ids, origin);
+        }
         if self
             .game
             .try_move(source, index, dest, self.settings.auto_play)
         {
+            let style = if dragged_from.is_some() {
+                Style::Settle
+            } else {
+                Style::Travel
+            };
+            let landing = self.animate_from(before, style, cx);
+            let landing_sound = if matches!(dest, PileRef::Foundation(_)) {
+                Sound::Foundation
+            } else {
+                Sound::Place
+            };
+            self.play_sound_after(landing, landing_sound, cx);
+            if reveals_card {
+                let flip_at = if self.settings.animations { 130 } else { 0 };
+                self.play_sound_after(flip_at, Sound::Flip, cx);
+            }
             self.selected = None;
             self.hint = None;
             self.after_action(cx);
         } else {
+            self.play_sound(Sound::Reject);
             self.toast("That move is not allowed", cx);
         }
     }
@@ -384,15 +703,73 @@ impl SolitaireApp {
         }
     }
 
-    fn on_drop(&mut self, drag: &DragCards, dest: PileRef, cx: &mut Context<Self>) {
+    /// A dragged run was released over a pile.
+    fn on_drop(
+        &mut self,
+        drag: &DragCards,
+        dest: PileRef,
+        mouse: (f32, f32),
+        cx: &mut Context<Self>,
+    ) {
+        // `take` doubles as a guard: if a nested handler already consumed this
+        // drop, the fallback on the window root does nothing.
+        let Some(active) = self.drag.take() else {
+            return;
+        };
         if !self.interaction_enabled() {
+            cx.notify();
             return;
         }
-        if self.game.can_move(drag.source, drag.index, dest) {
+        let origin = self.ghost_origin(mouse, active.grab);
+        if dest != drag.source && self.game.can_move(drag.source, drag.index, dest) {
+            self.drop_origin = Some(origin);
             self.try_user_move(drag.source, drag.index, dest, cx);
-        } else if let Some(card) = drag.cards.first() {
-            self.toast(format!("{} cannot go there", card_label(*card)), cx);
+            self.drop_origin = None;
+        } else {
+            if dest != drag.source
+                && let Some(card) = drag.cards.first()
+            {
+                self.toast(format!("{} cannot go there", card_label(*card)), cx);
+            }
+            self.return_dragged(drag, origin, dest != drag.source, cx);
         }
+    }
+
+    /// A dragged run was released over empty felt or the interface.
+    fn on_drop_elsewhere(&mut self, drag: &DragCards, mouse: (f32, f32), cx: &mut Context<Self>) {
+        let Some(active) = self.drag.take() else {
+            return;
+        };
+        if !self.interaction_enabled() {
+            cx.notify();
+            return;
+        }
+        let origin = self.ghost_origin(mouse, active.grab);
+        self.return_dragged(drag, origin, false, cx);
+    }
+
+    /// Spring a rejected run back to where it was picked up.
+    fn return_dragged(
+        &mut self,
+        drag: &DragCards,
+        origin: (f32, f32),
+        rejected: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let mut before = self.pose_snapshot();
+        let ids: Vec<u8> = drag.cards.iter().map(|card| card.id).collect();
+        self.lift_to_ghost(&mut before, &ids, origin);
+        let landing = self.animate_from(before, Style::Return, cx);
+        self.play_sound_after(
+            landing,
+            if rejected {
+                Sound::Reject
+            } else {
+                Sound::Place
+            },
+            cx,
+        );
+        cx.notify();
     }
 
     fn on_empty_destination(&mut self, dest: PileRef, cx: &mut Context<Self>) {
@@ -422,9 +799,32 @@ impl SolitaireApp {
             self.win_recorded = true;
             self.stats.record_win(&self.game);
             self.auto_finishing = false;
-            self.modal = Some(Modal::Victory);
-            self.toast("You won!", cx);
+
+            // Let the winning card visibly land before the celebration.
+            let delay = self.flight_remaining_ms();
+            if delay == 0 {
+                self.show_victory(cx);
+            } else {
+                cx.spawn(async move |weak, cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(delay + 80))
+                        .await;
+                    let _ = weak.update(cx, |this, cx| {
+                        if this.game.won && this.modal.is_none() {
+                            this.show_victory(cx);
+                        }
+                    });
+                })
+                .detach();
+            }
         }
+    }
+
+    fn show_victory(&mut self, cx: &mut Context<Self>) {
+        self.modal = Some(Modal::Victory);
+        self.play_sound(Sound::Victory);
+        self.toast("You won!", cx);
+        cx.notify();
     }
 
     fn undo(&mut self, cx: &mut Context<Self>) {
@@ -432,7 +832,10 @@ impl SolitaireApp {
             return;
         }
         self.auto_finishing = false;
+        let before = self.pose_snapshot();
         if self.game.undo() {
+            self.play_sound(Sound::Undo);
+            self.animate_from(before, Style::Travel, cx);
             self.selected = None;
             self.hint = None;
             self.save_now();
@@ -445,7 +848,10 @@ impl SolitaireApp {
             return;
         }
         self.auto_finishing = false;
+        let before = self.pose_snapshot();
         if self.game.redo() {
+            let landing = self.animate_from(before, Style::Travel, cx);
+            self.play_sound_after(landing, Sound::Place, cx);
             self.selected = None;
             self.hint = None;
             self.record_win_if_needed(cx);
@@ -486,13 +892,16 @@ impl SolitaireApp {
         cx.spawn(async move |weak, cx| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(95))
+                    .timer(Duration::from_millis(135))
                     .await;
                 let keep_going = weak.update(cx, |this, cx| {
                     if !this.auto_finishing {
                         return false;
                     }
+                    let before = this.pose_snapshot();
                     if this.game.auto_finish_one() {
+                        let landing = this.animate_from(before, Style::Travel, cx);
+                        this.play_sound_after(landing, Sound::Foundation, cx);
                         this.selected = None;
                         this.hint = None;
                         if this.game.won {
@@ -643,6 +1052,7 @@ impl SolitaireApp {
         let viewport = window.viewport_size();
         let vw: f32 = viewport.width.into();
         let vh: f32 = viewport.height.into();
+        self.viewport.set((vw, vh));
         let palette = self.settings.theme.palette();
 
         let mut root = div()
@@ -672,7 +1082,22 @@ impl SolitaireApp {
             .on_action(cx.listener(Self::on_show_help))
             .on_action(cx.listener(Self::on_draw_cards))
             .on_action(cx.listener(Self::on_dismiss))
-            .on_action(cx.listener(Self::on_quit_app));
+            .on_action(cx.listener(Self::on_quit_app))
+            .on_action(cx.listener(Self::on_toggle_perf))
+            // Clicking anywhere discards a stale drag (e.g. a release that
+            // happened outside the window and never delivered a drop).
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    if this.drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            // A run released over empty felt springs back to its pile.
+            .on_drop(cx.listener(|this, drag: &DragCards, window, cx| {
+                this.on_drop_elsewhere(drag, mouse_pos(window), cx)
+            }));
 
         root = root
             .child(self.render_menu_bar(cx))
@@ -693,6 +1118,10 @@ impl SolitaireApp {
                         .on_click(cx.listener(|this, _, _, cx| this.close_menu(cx))),
                 )
                 .child(self.render_menu_dropdown(menu, vw, cx));
+        }
+
+        if self.show_perf {
+            root = root.child(self.render_perf_overlay());
         }
 
         if let Some(modal) = self.modal {
@@ -723,8 +1152,8 @@ impl SolitaireApp {
                             .child(toast)
                             .with_animation(
                                 ("toast", self.toast_gen),
-                                Animation::new(Duration::from_millis(180)),
-                                |element, delta| element.opacity(delta),
+                                Animation::new(Duration::from_millis(240)),
+                                |element, delta| element.opacity(delta).mt(px((1.0 - delta) * 8.0)),
                             ),
                     ),
             );
@@ -938,32 +1367,12 @@ impl SolitaireApp {
 
     fn render_board(&self, vw: f32, vh: f32, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let palette = self.settings.theme.palette();
-        let gap = 12.0;
-        let cw = ((vw - 80.0 - gap * 6.0) / 7.0).clamp(68.0, 124.0);
-        let ch = cw * 1.42;
-        let board_w = cw * 7.0 + gap * 6.0;
-        let board_h = (vh - 34.0 - 58.0 - 30.0 - 20.0).max(430.0);
-        let inner_h = board_h - 36.0;
-        let tableau_h = (inner_h - ch - 18.0).max(180.0);
-
-        let max_units = self
-            .game
-            .tableau
-            .iter()
-            .map(|pile| {
-                pile.iter()
-                    .skip(1)
-                    .map(|card| if card.face_up { 1.0 } else { 0.42 })
-                    .sum::<f32>()
-            })
-            .fold(0.0f32, f32::max);
-        let step = if max_units > 0.0 {
-            ((tableau_h - ch) / max_units).clamp(6.0, ch * 0.24)
-        } else {
-            ch * 0.24
-        };
-        let up_step = step;
-        let down_step = (step * 0.42).max(4.0);
+        let layout = Layout::compute(vw, vh, &self.game);
+        let gap = motion::GAP;
+        let (cw, ch) = (layout.cw, layout.ch);
+        let (board_w, board_h, inner_h) = (layout.board_w, layout.board_h, layout.inner_h);
+        let tableau_h = layout.tableau_h;
+        let (up_step, down_step) = (layout.up_step, layout.down_step);
 
         let stock = self.render_stock(cw, ch, cx);
         let waste = self.render_waste(cw, ch, cx);
@@ -1039,7 +1448,14 @@ impl SolitaireApp {
                     .w(px(board_w))
                     .h(px(inner_h))
                     .child(top_row)
-                    .child(tableau_row),
+                    .child(tableau_row)
+                    // Cards in flight are drawn last, above every pile.
+                    .children(
+                        self.flights
+                            .iter()
+                            .map(|active| self.render_flight(active, cw, ch))
+                            .collect::<Vec<_>>(),
+                    ),
             );
 
         div()
@@ -1161,15 +1577,31 @@ impl SolitaireApp {
                     .child("WASTE"),
             );
         } else {
+            let len = self.game.waste.len();
             let visible = if self.game.rules.draw_three {
-                self.game.waste.len().min(3)
+                len.min(3)
             } else {
                 1
             };
-            let start = self.game.waste.len() - visible;
-            for index in start..self.game.waste.len() {
+            // Resting position of the fan (must match `motion::poses`).
+            let start = len - visible;
+            // While the newest cards are still flying in, keep showing the
+            // cards underneath them so the pile never blinks empty.
+            let in_flight = self
+                .game
+                .waste
+                .iter()
+                .rev()
+                .take_while(|card| self.is_card_hidden(card.id))
+                .count();
+            let render_start = start.saturating_sub(in_flight.min(3));
+            for index in render_start..len {
                 let card = self.game.waste[index];
-                let left = (index - start) as f32 * cw * 0.16;
+                let left = if index >= start {
+                    (index - start) as f32 * cw * motion::WASTE_FAN
+                } else {
+                    0.0
+                };
                 if index + 1 == self.game.waste.len() {
                     waste = waste.child(self.interactive_card(
                         card,
@@ -1189,6 +1621,7 @@ impl SolitaireApp {
                             .left(px(left))
                             .w(px(cw))
                             .h(px(ch))
+                            .when(self.is_card_hidden(card.id), |this| this.opacity(0.0))
                             .child(card_view(card, cw, ch, back)),
                     );
                 }
@@ -1208,7 +1641,8 @@ impl SolitaireApp {
         let palette = self.settings.theme.palette();
         let back = self.settings.card_back;
         let suit = crate::model::Suit::ALL[pile];
-        let highlighted = self.hint_destination() == Some(PileRef::Foundation(pile));
+        let drop_target = self.is_drop_target(PileRef::Foundation(pile));
+        let highlighted = self.hint_destination() == Some(PileRef::Foundation(pile)) || drop_target;
         let cards = &self.game.foundations[pile];
 
         let mut foundation = div()
@@ -1216,8 +1650,8 @@ impl SolitaireApp {
             .relative()
             .w(px(cw))
             .h(px(ch))
-            .on_drop(cx.listener(move |this, drag: &DragCards, _, cx| {
-                this.on_drop(drag, PileRef::Foundation(pile), cx)
+            .on_drop(cx.listener(move |this, drag: &DragCards, window, cx| {
+                this.on_drop(drag, PileRef::Foundation(pile), mouse_pos(window), cx)
             }));
 
         if cards.is_empty() {
@@ -1288,6 +1722,7 @@ impl SolitaireApp {
                             .left(px(0.0))
                             .w(px(cw))
                             .h(px(ch))
+                            .when(self.is_card_hidden(card.id), |this| this.opacity(0.0))
                             .child(card_view(*card, cw, ch, back)),
                     );
                 }
@@ -1295,17 +1730,7 @@ impl SolitaireApp {
         }
 
         if highlighted {
-            foundation = foundation.child(
-                div()
-                    .absolute()
-                    .top(px(0.0))
-                    .left(px(0.0))
-                    .w(px(cw))
-                    .h(px(ch))
-                    .rounded(px(cw * 0.065))
-                    .border_2()
-                    .border_color(rgb(palette.accent)),
-            );
+            foundation = foundation.child(drop_glow(0.0, cw, ch, palette, drop_target));
         }
         foundation
     }
@@ -1323,15 +1748,18 @@ impl SolitaireApp {
         let palette = self.settings.theme.palette();
         let back = self.settings.card_back;
         let cards = &self.game.tableau[pile];
-        let highlighted = self.hint_destination() == Some(PileRef::Tableau(pile));
+        let drop_target = self.is_drop_target(PileRef::Tableau(pile));
+        let highlighted = self.hint_destination() == Some(PileRef::Tableau(pile)) || drop_target;
+        // Where the next card dropped on this pile will land.
+        let mut slot_top = 0.0f32;
 
         let mut tableau = div()
             .id(("tableau", pile))
             .relative()
             .w(px(cw))
             .h(px(tableau_h))
-            .on_drop(cx.listener(move |this, drag: &DragCards, _, cx| {
-                this.on_drop(drag, PileRef::Tableau(pile), cx)
+            .on_drop(cx.listener(move |this, drag: &DragCards, window, cx| {
+                this.on_drop(drag, PileRef::Tableau(pile), mouse_pos(window), cx)
             }));
 
         if cards.is_empty() {
@@ -1401,25 +1829,17 @@ impl SolitaireApp {
                             .left(px(0.0))
                             .w(px(cw))
                             .h(px(ch))
+                            .when(self.is_card_hidden(card.id), |this| this.opacity(0.0))
                             .child(card_back(cw, ch, back)),
                     );
                 }
                 offset += if card.face_up { up_step } else { down_step };
             }
+            slot_top = offset;
         }
 
         if highlighted {
-            tableau = tableau.child(
-                div()
-                    .absolute()
-                    .top(px(0.0))
-                    .left(px(0.0))
-                    .w(px(cw))
-                    .h(px(ch))
-                    .rounded(px(cw * 0.065))
-                    .border_2()
-                    .border_color(rgb(palette.accent)),
-            );
+            tableau = tableau.child(drop_glow(slot_top, cw, ch, palette, drop_target));
         }
         tableau
     }
@@ -1439,6 +1859,7 @@ impl SolitaireApp {
         let back = self.settings.card_back;
         let selected = self.is_selected(source, index);
         let hinted = self.is_hint_source(source, index);
+        let hidden = self.is_card_hidden(card.id);
         let mut face = card_view(card, cw, ch, back);
         if selected {
             face = face.border_2().border_color(gold()).shadow_lg();
@@ -1449,10 +1870,8 @@ impl SolitaireApp {
                 .shadow_lg();
         }
 
-        let drag_cards = self
-            .game
-            .cards_at(source, index)
-            .map(|cards| cards.to_vec());
+        // Cards are positioned purely by layout: motion is handled by the
+        // flight overlay, which hides this resting copy while it travels.
         let mut element = div()
             .id(("card", card.id as usize))
             .absolute()
@@ -1460,8 +1879,17 @@ impl SolitaireApp {
             .left(px(left))
             .w(px(cw))
             .h(px(ch))
+            .rounded(px(cw * 0.065))
+            .child(face);
+
+        if hidden {
+            // In the air (or in the mouse's hand): invisible and inert.
+            return element.opacity(0.0);
+        }
+
+        element = element
             .cursor(CursorStyle::OpenHand)
-            .hover(|this| this.opacity(0.98))
+            .hover(|this| this.shadow_lg())
             .on_click(
                 cx.listener(move |this, event, _, cx| this.on_card_click(source, index, event, cx)),
             )
@@ -1470,20 +1898,145 @@ impl SolitaireApp {
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                     this.on_card_right_click(source, index, cx)
                 }),
-            )
-            .child(face);
+            );
 
-        if let Some(cards) = drag_cards {
+        if let Some(cards) = self
+            .game
+            .cards_at(source, index)
+            .map(|cards| cards.to_vec())
+        {
+            let valid: Vec<PileRef> = (0..4)
+                .map(PileRef::Foundation)
+                .chain((0..7).map(PileRef::Tableau))
+                .filter(|dest| self.game.can_move(source, index, *dest))
+                .collect();
             let payload = DragCards {
                 source,
                 index,
                 cards: cards.clone(),
+                valid,
             };
-            element = element.on_drag(payload, move |_drag: &DragCards, _offset, _window, cx| {
-                cx.new(|_| DragGhost::new(cards.clone(), cw, ch, back))
+            let app = cx.entity();
+            element = element.on_drag(payload, move |drag: &DragCards, offset, _window, cx| {
+                let grab: (f32, f32) = (offset.x.into(), offset.y.into());
+                let started = drag.clone();
+                app.update(cx, |this, cx| this.begin_drag(started, grab, cx));
+                cx.new(|_| DragGhost::new(cards.clone(), cw, ch, back, grab))
             });
         }
         element
+    }
+
+    /// One card in the flight overlay. The card travels along its eased path,
+    /// casts a larger shadow while airborne and, when it changes face, turns
+    /// over in 3D-style perspective (foreshortened to edge-on and back).
+    fn render_flight(&self, active: &ActiveFlight, cw: f32, ch: f32) -> impl IntoElement + use<> {
+        let flight = active.flight;
+        let back = self.settings.card_back;
+        let total = flight.total_ms();
+        let key = (active.serial << 6) ^ flight.card.id as u64;
+
+        let mut base = div()
+            .absolute()
+            .left(px(flight.from.0))
+            .top(px(flight.from.1))
+            .w(px(cw))
+            .h(px(ch))
+            .rounded(px(cw * 0.065));
+        if !flight.flips() {
+            // Static content is built once; flipping cards rebuild each frame.
+            base = base.child(card_view(flight.card, cw, ch, back));
+        }
+
+        base.with_animation(
+            ("flight", key),
+            Animation::new(Duration::from_millis(total.ceil().max(1.0) as u64)),
+            move |element, delta| {
+                let frame = flight.frame(delta * total);
+                let mut element = element.left(px(frame.x)).top(px(frame.y));
+                if frame.lifted {
+                    element = element.shadow_lg();
+                }
+                match frame.flip {
+                    Some(flip) => element.child(flip_card(
+                        flight.card,
+                        cw,
+                        ch,
+                        back,
+                        flip.scale_x,
+                        flip.show_face_up,
+                        flip.boost,
+                    )),
+                    None => element,
+                }
+            },
+        )
+    }
+
+    fn render_perf_overlay(&self) -> impl IntoElement + use<> {
+        let palette = self.settings.theme.palette();
+        let (summary, active) = {
+            let perf = self.perf.borrow();
+            (perf.summary(), perf.is_active(Instant::now()))
+        };
+        let line = |text: String| {
+            div()
+                .text_size(px(11.0))
+                .line_height(px(16.0))
+                .text_color(rgb(palette.text))
+                .child(text)
+        };
+        let headline = if summary.frames > 2 {
+            format!(
+                "{:.0} fps   ·   frame {:.1} ms avg   {:.1} p95   {:.1} max",
+                summary.fps,
+                summary.interval_avg_ms,
+                summary.interval_p95_ms,
+                summary.interval_max_ms
+            )
+        } else {
+            "idle — move a card to measure animation frames".to_string()
+        };
+
+        div()
+            .absolute()
+            .top(px(100.0))
+            .right(px(26.0))
+            .px(px(12.0))
+            .py(px(9.0))
+            .rounded(px(10.0))
+            .bg(rgba(palette.panel))
+            .border_1()
+            .border_color(rgb(palette.accent).fade(0.5))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(palette.accent))
+                    .child(if active {
+                        "PERFORMANCE · LIVE"
+                    } else {
+                        "PERFORMANCE · F3 to hide"
+                    }),
+            )
+            .child(line(headline))
+            .child(line(format!(
+                "build {:.2} ms avg   {:.2} ms max   dropped frames {}",
+                summary.build_avg_ms, summary.build_max_ms, summary.dropped
+            )))
+            .child(line(format!(
+                "flights {}   animations {}   volume {:.0}%",
+                self.flights.len(),
+                if self.settings.animations {
+                    "on"
+                } else {
+                    "off"
+                },
+                self.settings.volume * 100.0,
+            )))
     }
 
     fn render_status_bar(&self) -> impl IntoElement + use<> {
@@ -1830,6 +2383,42 @@ impl SolitaireApp {
                 }),
             ))
             .child(menu_item(
+                "om-animations",
+                "Card Animations",
+                "",
+                self.settings.animations,
+                true,
+                p,
+                cx.listener(|this, _, _, cx| {
+                    this.menu = None;
+                    this.toggle_animations(cx);
+                }),
+            ))
+            .child(menu_item(
+                "om-sound",
+                "Sound Effects",
+                "",
+                self.settings.sound_effects,
+                true,
+                p,
+                cx.listener(|this, _, _, cx| {
+                    this.menu = None;
+                    this.toggle_sound_effects(cx);
+                }),
+            ))
+            .child(menu_item(
+                "om-perf",
+                "Performance Overlay",
+                "F3",
+                self.show_perf,
+                true,
+                p,
+                cx.listener(|this, _, _, cx| {
+                    this.menu = None;
+                    this.toggle_perf(cx);
+                }),
+            ))
+            .child(menu_item(
                 "om-theme",
                 format!("Theme: {}", self.settings.theme.label()),
                 "",
@@ -1907,6 +2496,18 @@ impl SolitaireApp {
         vh: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let modal_animation_id: usize = match modal {
+            Modal::Settings => 0,
+            Modal::Stats => 1,
+            Modal::Help => 2,
+            Modal::About => 3,
+            Modal::ConfirmNew(NewKind::Random) => 4,
+            Modal::ConfirmNew(NewKind::Daily) => 5,
+            Modal::ConfirmNew(NewKind::Restart) => 6,
+            Modal::ConfirmResetStats => 7,
+            Modal::Pause => 8,
+            Modal::Victory => 9,
+        };
         let overlay = div()
             .id("modal-backdrop")
             .absolute()
@@ -1920,7 +2521,7 @@ impl SolitaireApp {
             .items_center()
             .on_click(cx.listener(|this, _, _, cx| this.close_modal(cx)));
 
-        match modal {
+        let content = match modal {
             Modal::Settings => overlay.child(self.render_settings(vw, vh, cx)),
             Modal::Stats => overlay.child(self.render_stats(vw, vh, cx)),
             Modal::Help => overlay.child(self.render_help(vw, vh, cx)),
@@ -1935,7 +2536,12 @@ impl SolitaireApp {
                 }
                 win_overlay.child(self.render_victory(cx))
             }
-        }
+        };
+        content.with_animation(
+            ("modal-entry", modal_animation_id),
+            Animation::new(Duration::from_millis(260)),
+            |element, delta| element.opacity(delta),
+        )
     }
 
     fn render_settings(
@@ -2031,7 +2637,24 @@ impl SolitaireApp {
                 "set-autoplay",
                 p,
                 cx.listener(|this, _, _, cx| this.toggle_auto_play(cx)),
-            ));
+            ))
+            .child(toggle_row(
+                "CARD ANIMATIONS",
+                "Smooth card travel, 3D flips and dealing. Off makes moves instant.",
+                self.settings.animations,
+                "set-animations",
+                p,
+                cx.listener(|this, _, _, cx| this.toggle_animations(cx)),
+            ))
+            .child(toggle_row(
+                "SOUND EFFECTS",
+                "Card slides, snaps, flips and a victory fanfare.",
+                self.settings.sound_effects,
+                "set-sound-effects",
+                p,
+                cx.listener(|this, _, _, cx| this.toggle_sound_effects(cx)),
+            ))
+            .child(self.volume_control(p, cx));
 
         let right = div()
             .w(px(290.0))
@@ -2113,6 +2736,81 @@ impl SolitaireApp {
                         p,
                         cx.listener(|this, _, _, cx| this.start_new_game(NewKind::Random, cx)),
                     )),
+            )
+    }
+
+    fn volume_control(&self, palette: Palette, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let volume = self.settings.volume;
+        let level = (volume * 10.0).round() as usize;
+        let live = self.settings.sound_effects;
+
+        let mut steps = div().flex().items_end().gap(px(3.0));
+        for step in 0..10usize {
+            let filled = step < level;
+            steps = steps.child(
+                div()
+                    .id(("volume-step", step))
+                    .w(px(13.0))
+                    .h(px(8.0 + step as f32 * 1.8))
+                    .rounded(px(3.0))
+                    .bg(match (filled, live) {
+                        (true, true) => rgb(palette.accent),
+                        (true, false) => rgb(palette.muted).fade(0.5),
+                        (false, _) => rgba(0xffffff1f),
+                    })
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|this| this.opacity(0.78))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_volume((step + 1) as f32 / 10.0, cx)
+                    })),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(7.0))
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(palette.accent))
+                    .child("VOLUME"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(segment_button(
+                        "volume-down",
+                        "−",
+                        false,
+                        palette,
+                        cx.listener(|this, _, _, cx| {
+                            let next = this.settings.volume - 0.1;
+                            this.set_volume(next, cx)
+                        }),
+                    ))
+                    .child(steps)
+                    .child(segment_button(
+                        "volume-up",
+                        "+",
+                        false,
+                        palette,
+                        cx.listener(|this, _, _, cx| {
+                            let next = this.settings.volume + 0.1;
+                            this.set_volume(next, cx)
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .w(px(38.0))
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(palette.text))
+                            .child(format!("{:.0}%", volume * 100.0)),
+                    ),
             )
     }
 
@@ -2472,6 +3170,7 @@ impl SolitaireApp {
                             .child(shortcut("P", "Pause"))
                             .child(shortcut("S", "Statistics"))
                             .child(shortcut("F1", "Help"))
+                            .child(shortcut("F3", "Performance overlay"))
                             .child(shortcut("Esc", "Close / deselect")),
                     ),
             )
@@ -2872,8 +3571,9 @@ impl SolitaireApp {
         let x = ((index as f32 * 73.0 + 23.0) % (vw - 20.0)).max(6.0);
         let width = 5.0 + (index % 3) as f32 * 2.0;
         let height = 9.0 + (index % 4) as f32 * 3.0;
-        let duration = 1900 + (index % 5) as u64 * 310;
+        let duration = 2200 + (index % 5) as u64 * 360;
         let phase = index as f32 * 0.9;
+        let amplitude = 18.0 + (index % 4) as f32 * 5.0;
         div()
             .absolute()
             .top(px(-20.0))
@@ -2886,11 +3586,14 @@ impl SolitaireApp {
                 ("confetti", index),
                 Animation::new(Duration::from_millis(duration)).repeat(),
                 move |element, delta| {
-                    let sway = (delta * std::f32::consts::TAU + phase).sin() * 16.0;
+                    let angle = delta * std::f32::consts::TAU + phase;
+                    let sway = angle.sin() * amplitude;
+                    let flutter = (angle * 2.4).cos().abs();
                     element
                         .top(px(-20.0 + delta * (vh + 40.0)))
                         .left(px((x + sway).clamp(0.0, vw - 8.0)))
-                        .opacity(0.88)
+                        .w(px(width * (0.35 + flutter * 0.65)))
+                        .opacity(0.72 + flutter * 0.22)
                 },
             )
     }
@@ -2986,11 +3689,20 @@ impl SolitaireApp {
     fn on_quit_app(&mut self, _: &QuitApp, _: &mut Window, cx: &mut Context<Self>) {
         self.quit(cx);
     }
+
+    fn on_toggle_perf(&mut self, _: &TogglePerf, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_perf(cx);
+    }
 }
 
 impl Render for SolitaireApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_app(window, cx)
+        let started = Instant::now();
+        let element = self.render_app(window, cx);
+        self.perf
+            .borrow_mut()
+            .record(Instant::now(), started.elapsed());
+        element
     }
 }
 
@@ -3048,6 +3760,22 @@ fn daily_seed() -> u64 {
     days.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x005d_411e_2026
 }
 
+/// Soft highlight around the slot a card would land in, brighter and filled
+/// for a live drag target and an outline only for a hint.
+fn drop_glow(top: f32, cw: f32, ch: f32, palette: Palette, drop_target: bool) -> Div {
+    let accent = rgb(palette.accent);
+    div()
+        .absolute()
+        .top(px(top))
+        .left(px(0.0))
+        .w(px(cw))
+        .h(px(ch))
+        .rounded(px(cw * 0.065))
+        .border_2()
+        .border_color(accent)
+        .when(drop_target, |this| this.bg(accent.fade(0.14)).shadow_lg())
+}
+
 fn tool_button<F>(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -3093,12 +3821,12 @@ where
             this.cursor(CursorStyle::PointingHand)
                 .hover(|this| {
                     if primary {
-                        this.opacity(0.92)
+                        this.opacity(0.96).shadow_lg()
                     } else {
-                        this.bg(rgba(0xffffff18))
+                        this.bg(rgba(0xffffff20)).shadow_lg()
                     }
                 })
-                .active(|this| this.opacity(0.82))
+                .active(|this| this.opacity(0.78))
                 .on_click(on_click)
         })
         .when(!enabled, |this| this.opacity(0.36))

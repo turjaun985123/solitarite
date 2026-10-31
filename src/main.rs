@@ -1,7 +1,10 @@
 //! Solitarite — a full-featured Klondike solitaire game built with GPUI.
 
+mod audio;
 mod cards;
 mod model;
+mod motion;
+mod perf;
 mod persistence;
 mod theme;
 mod ui;
@@ -13,11 +16,14 @@ use gpui::{
 
 use ui::{
     AutoFinish, DailyDeal, Dismiss, DrawCards, NewGame, PauseGame, QuitApp, RedoMove, RestartDeal,
-    ShowHelp, ShowHint, ShowSettings, ShowStats, SolitaireApp, UndoMove,
+    ShowHelp, ShowHint, ShowSettings, ShowStats, SolitaireApp, TogglePerf, UndoMove,
 };
 
 fn main() {
     Application::new().run(|cx: &mut App| {
+        // Build the sound buffers and open the audio device off the UI thread.
+        audio::warm_up();
+
         cx.bind_keys([
             KeyBinding::new("f2", NewGame, Some("Solitaire")),
             KeyBinding::new("ctrl-n", NewGame, Some("Solitaire")),
@@ -33,6 +39,7 @@ fn main() {
             KeyBinding::new("s", ShowStats, Some("Solitaire")),
             KeyBinding::new("ctrl-shift-s", ShowSettings, Some("Solitaire")),
             KeyBinding::new("f1", ShowHelp, Some("Solitaire")),
+            KeyBinding::new("f3", TogglePerf, Some("Solitaire")),
             KeyBinding::new("space", DrawCards, Some("Solitaire")),
             KeyBinding::new("escape", Dismiss, Some("Solitaire")),
             KeyBinding::new("ctrl-q", QuitApp, None),

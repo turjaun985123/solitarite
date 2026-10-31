@@ -32,9 +32,22 @@ themes, card backs, and a keyboard-friendly interface.
   moves, best Standard/Vegas scores and total time won.
 - **Themes & card backs** — Green Felt, Midnight and Burgundy themes with four
   card-back designs.
+- **Cinematic card motion** — every card physically travels between piles on an
+  eased, slightly arced path with a lifted shadow; a real deal from the stock at
+  the start of each game; staggered runs; and animated stock-to-waste draws and
+  recycles. Cards turn over with a foreshortened 3D-style flip.
+- **Tactile drag and drop** — a lifted card swells under your cursor, the
+  source stays empty while you hold it, every legal destination glows, and the
+  card settles smoothly into place on release (or springs back if rejected).
+- **Layered sound design** — synthesized card slides, snaps, flicks, a riffle
+  shuffle, a foundation bell and a victory fanfare, with pitch variation, sounds
+  timed to the moment a card lands, and a master volume control.
+- **Performance overlay** — press `F3` for live fps, frame-time percentiles,
+  render build cost and dropped-frame counts (see `PROFILING.md`).
 - **Quality-of-life** — double-click or right-click a card to send it to a
   foundation, auto-play to foundations, pause, toast messages, victory
-  confetti and responsive layout.
+  confetti and responsive layout. Sound effects can be muted in Settings and
+  gracefully fall back to silence when no audio device is available.
 
 ## Controls
 
@@ -51,6 +64,7 @@ themes, card backs, and a keyboard-friendly interface.
 | Statistics | `S` |
 | Settings | `Ctrl+Shift+S` |
 | Help | `F1` |
+| Performance overlay | `F3` |
 | Draw from stock | `Space` |
 | Dismiss menu / modal / selection | `Esc` |
 | Quit | `Ctrl+Q` |
@@ -63,50 +77,31 @@ Mouse controls:
 - Click the stock to draw; click the empty stock outline to recycle the waste.
 - Use the in-game **Game**, **Options** and **Help** menus for everything else.
 
-## Build and run
-
-Solitarite requires a Rust toolchain with support for edition 2024 (Rust 1.85
-or newer) and the usual GPUI Linux build dependencies.
-
-```bash
-cargo run --release
-```
-
-For development:
-
-```bash
-cargo check
-cargo test
-cargo run
-```
-
-### Download a release
+## Download and run
 
 Prebuilt binaries for Linux, macOS and Windows are attached to each
 [GitHub release](https://github.com/turjaun985123/solitarite/releases/latest).
 Download the archive for your operating system, extract it, and run the
 `solitarite` executable (`solitarite.exe` on Windows). On Linux, the system
-libraries listed below are also needed at runtime. New releases are built when
-a `v*` version tag is pushed.
+libraries required by GPUI and your graphics stack must be installed. New
+releases are built when a `v*` version tag is pushed.
 
-### Linux dependencies
+## Development and verification
 
-On Debian/Ubuntu, GPUI needs development headers for X11/Wayland, fontconfig,
-FreeType, and the graphics stack. A typical set is:
+Builds and tests run through [GitHub Actions](.github/workflows/ci.yml). The CI
+workflow checks formatting, runs the test suite, and builds release binaries on
+Linux, macOS, and Windows. Pull requests and pushes must pass CI before changes
+are considered verified. The release workflow repeats tests before packaging
+tagged builds.
 
-```bash
-sudo apt-get install \
-  build-essential pkg-config \
-  libx11-dev libxkbcommon-dev libwayland-dev \
-  libfontconfig1-dev libfreetype6-dev \
-  libvulkan-dev libgl1-mesa-dev libxcb1-dev
-```
+## Audio and motion
 
-GPUI also needs a working display server. For a headless smoke test:
-
-```bash
-xvfb-run -a cargo run
-```
+Sound effects are enabled by default; mute them or set the volume in
+**Settings**. Card animations can be switched off there (or in the Options menu)
+for instant moves. Playback is best-effort and uses a single background audio
+worker that mixes overlapping effects; systems without an audio output device
+continue silently. See `IMPLEMENTATION_NOTES.md` for how card flights, flips and
+the sound engine work, and `PROFILING.md` for measuring rendering performance.
 
 ## Save data
 
@@ -128,6 +123,9 @@ from the save so the next launch starts a new deal.
 | `src/model.rs` | Cards, rules, moves, scoring, undo/redo, hints, auto-finish, tests |
 | `src/cards.rs` | Card faces, card backs and the drag ghost |
 | `src/persistence.rs` | Settings, statistics, save/load and data-directory handling |
+| `src/motion.rs` | Board layout, per-card poses, flight planning and easing (pure, unit-tested) |
+| `src/audio.rs` | Synthesized, layered sound effects and the mixing worker |
+| `src/perf.rs` | Frame-time profiler behind the `F3` overlay |
 | `src/theme.rs` | Theme palettes and color helpers |
 | `src/ui.rs` | Application view, board, menus, modals, animations and input |
 | `src/main.rs` | Window creation, key bindings and app lifecycle |

@@ -1,9 +1,12 @@
+use std::time::Duration;
+
 use gpui::{
-    App, Context, Div, FontWeight, Render, SharedString, Window, div, linear_color_stop,
-    linear_gradient, prelude::*, px, rgb,
+    Animation, AnimationExt as _, App, Context, Div, FontWeight, Render, SharedString, Window, div,
+    linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
 };
 
 use crate::model::{Card, Rank};
+use crate::motion::ease_out_cubic;
 use crate::persistence::CardBack;
 use crate::theme::{
     Fade as _, card_back_colors, card_black, card_cream, card_edge, card_paper, card_red,
@@ -341,45 +344,118 @@ pub fn card_view(card: Card, cw: f32, ch: f32, back: CardBack) -> Div {
     }
 }
 
+/// How much a lifted card grows (about the grab point) while dragged.
+pub const GHOST_SCALE: f32 = 1.045;
+/// Vertical spacing between cards of a dragged run, as a fraction of height.
+pub const GHOST_STEP: f32 = 0.24;
+
+/// A card mid-turn. `scale_x` foreshortens the card around its vertical centre
+/// line (1.0 flat, ~0 edge-on), `show_face_up` picks which side is visible and
+/// `boost` grows it slightly while it rises toward the player. The faces are
+/// rebuilt at the squashed width, so pips and corner indices foreshorten like
+/// a real card turning rather than being clipped.
+pub fn flip_card(
+    card: Card,
+    cw: f32,
+    ch: f32,
+    back: CardBack,
+    scale_x: f32,
+    show_face_up: bool,
+    boost: f32,
+) -> Div {
+    let w = (cw * scale_x).max(2.0);
+    let h = ch * boost;
+    // Darken as the card turns edge-on, as if it were catching less light.
+    let shade = ((1.0 - scale_x).clamp(0.0, 1.0) * 120.0) as u32;
+    let face = if show_face_up {
+        card_face(card, w, h)
+    } else {
+        card_back(w, h, back)
+    };
+
+    div().relative().w(px(cw)).h(px(ch)).child(
+        div()
+            .absolute()
+            .left(px((cw - w) / 2.0))
+            .top(px(-(h - ch) / 2.0))
+            .w(px(w))
+            .h(px(h))
+            .rounded(px(cw * 0.065))
+            .shadow_lg()
+            .child(face)
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(0.0))
+                    .w(px(w))
+                    .h(px(h))
+                    .rounded(px(cw * 0.065))
+                    .bg(rgba(shade)),
+            ),
+    )
+}
+
 pub struct DragGhost {
     cards: Vec<Card>,
     cw: f32,
     ch: f32,
     back: CardBack,
+    /// Where inside the first card the mouse grabbed it, in pixels.
+    grab: (f32, f32),
 }
 
 impl DragGhost {
-    pub fn new(cards: Vec<Card>, cw: f32, ch: f32, back: CardBack) -> Self {
+    pub fn new(cards: Vec<Card>, cw: f32, ch: f32, back: CardBack, grab: (f32, f32)) -> Self {
         Self {
             cards,
             cw,
             ch,
             back,
+            grab,
         }
     }
 }
 
 impl Render for DragGhost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let step = self.ch * 0.24;
-        let count = self.cards.len().max(1);
-        let mut root = div()
-            .relative()
-            .w(px(self.cw))
-            .h(px(self.ch + step * (count.saturating_sub(1)) as f32))
-            .opacity(0.94);
+        let cards = self.cards.clone();
+        let (cw, ch, back, grab) = (self.cw, self.ch, self.back, self.grab);
+        let count = cards.len().max(1);
 
-        for (index, card) in self.cards.iter().enumerate() {
-            root = root.child(
-                div()
-                    .absolute()
-                    .top(px(step * index as f32))
-                    .left(px(0.0))
-                    .shadow_lg()
-                    .child(card_view(*card, self.cw, self.ch, self.back)),
-            );
-        }
-        root
+        div()
+            .relative()
+            .w(px(cw))
+            .h(px(ch + ch * GHOST_STEP * (count - 1) as f32))
+            .with_animation(
+                "ghost-pickup",
+                Animation::new(Duration::from_millis(130)),
+                move |root, delta| {
+                    // The card is "picked up": it swells about the point the
+                    // mouse is holding and its shadow deepens.
+                    let eased = ease_out_cubic(delta);
+                    let scale = 1.0 + (GHOST_SCALE - 1.0) * eased;
+                    let (w, h) = (cw * scale, ch * scale);
+                    let step = ch * GHOST_STEP * scale;
+
+                    let mut root = root
+                        .left(px(-grab.0 * (scale - 1.0)))
+                        .top(px(-grab.1 * (scale - 1.0)))
+                        .opacity(0.9 + 0.06 * eased);
+                    for (index, card) in cards.iter().enumerate() {
+                        root = root.child(
+                            div()
+                                .absolute()
+                                .top(px(step * index as f32))
+                                .left(px(0.0))
+                                .rounded(px(cw * 0.065))
+                                .shadow_lg()
+                                .child(card_view(*card, w, h, back)),
+                        );
+                    }
+                    root
+                },
+            )
     }
 }
 

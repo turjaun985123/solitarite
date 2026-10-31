@@ -1,6 +1,6 @@
 [package]
 name = "solitarite"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "A full-featured Klondike solitaire game built with Rust and GPUI"
@@ -13,6 +13,7 @@ gpui = "0.2.2"
 # client still references the Linux ENOATTR constant that newer libc removed.
 libc = "=0.2.186"
 rand = "0.8"
+rodio = "0.20"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

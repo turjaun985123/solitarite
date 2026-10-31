@@ -72,12 +72,33 @@ impl CardBack {
     }
 }
 
+fn default_sound_effects() -> bool {
+    true
+}
+
+fn default_volume() -> f32 {
+    0.8
+}
+
+fn default_animations() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     pub rules: Rules,
     pub auto_play: bool,
     pub theme: Theme,
     pub card_back: CardBack,
+    /// Play short UI/game sounds when an audio output device is available.
+    #[serde(default = "default_sound_effects")]
+    pub sound_effects: bool,
+    /// Master volume for sound effects, 0.0 (silent) to 1.0 (full).
+    #[serde(default = "default_volume")]
+    pub volume: f32,
+    /// Animate cards travelling between piles, flipping and dealing.
+    #[serde(default = "default_animations")]
+    pub animations: bool,
 }
 
 impl Default for Settings {
@@ -87,6 +108,9 @@ impl Default for Settings {
             auto_play: true,
             theme: Theme::Green,
             card_back: CardBack::Midnight,
+            sound_effects: true,
+            volume: default_volume(),
+            animations: true,
         }
     }
 }
@@ -261,5 +285,45 @@ fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
             let _ = fs::remove_file(to);
             fs::rename(from, to)
         }
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::Settings;
+
+    #[test]
+    fn older_settings_default_sound_effects_to_enabled() {
+        let old_settings = r#"{
+            "rules": { "draw_three": false, "scoring": "Standard", "timed": false },
+            "auto_play": true,
+            "theme": "Green",
+            "card_back": "Midnight"
+        }"#;
+
+        let settings: Settings = serde_json::from_str(old_settings).unwrap();
+        assert!(settings.sound_effects);
+    }
+
+    #[test]
+    fn older_settings_get_default_volume_and_animations() {
+        let old_settings = r#"{
+            "rules": {"draw_three": false, "scoring": "Standard", "timed": true},
+            "auto_play": true,
+            "theme": "Green",
+            "card_back": "Midnight"
+        }"#;
+        let settings: Settings = serde_json::from_str(old_settings).unwrap();
+        assert!((settings.volume - 0.8).abs() < f32::EPSILON);
+        assert!(settings.animations);
+    }
+
+    #[test]
+    fn sound_effect_setting_can_be_disabled() {
+        let mut settings = Settings::default();
+        settings.sound_effects = false;
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let decoded: Settings = serde_json::from_str(&encoded).unwrap();
+        assert!(!decoded.sound_effects);
     }
 }
