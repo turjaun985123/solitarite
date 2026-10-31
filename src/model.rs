@@ -1042,15 +1042,15 @@ mod tests {
         valid_game.stock[1] = duplicate;
         assert!(!valid_game.is_valid());
 
-        let mut game = game();
-        game.stock[0].rank = Rank::King;
-        assert!(!game.is_valid());
+        let mut mismatched_rank = game();
+        mismatched_rank.stock[0].rank = Rank::King;
+        assert!(!mismatched_rank.is_valid());
 
-        let mut game = game();
-        assert!(game.draw());
-        let duplicate = game.undo[0].stock[0];
-        game.undo[0].stock[1] = duplicate;
-        assert!(!game.is_valid());
+        let mut invalid_history = game();
+        assert!(invalid_history.draw());
+        let duplicate = invalid_history.undo[0].stock[0];
+        invalid_history.undo[0].stock[1] = duplicate;
+        assert!(!invalid_history.is_valid());
     }
 
     #[test]

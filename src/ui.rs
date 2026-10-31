@@ -1644,7 +1644,8 @@ impl SolitaireApp {
 
         let stock = self.render_stock(cw, ch, cx);
         let waste = self.render_waste(cw, ch, cx);
-        let foundations = std::array::from_fn(|pile| self.render_foundation(pile, cw, ch, cx));
+        let foundations: [_; 4] =
+            std::array::from_fn(|pile| self.render_foundation(pile, cw, ch, cx));
 
         let top_row = div()
             .flex()
