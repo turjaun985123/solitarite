@@ -239,7 +239,7 @@ impl Flight {
     pub fn frame(&self, elapsed_ms: f32) -> Frame {
         let t = ((elapsed_ms - self.delay_ms) / self.duration_ms.max(1.0)).clamp(0.0, 1.0);
         let eased = match self.style {
-            Style::Travel => travel_ease(t),
+            Style::Travel => travel_ease(t, self.duration_ms),
             Style::Deal | Style::Settle => ease_out_cubic(t),
             Style::Return => ease_out_back(t),
         };
@@ -298,19 +298,27 @@ impl Flight {
     }
 }
 
-fn smoothstep(t: f32) -> f32 {
-    t * t * (3.0 - 2.0 * t)
-}
-
 pub fn ease_out_cubic(t: f32) -> f32 {
     let inv = 1.0 - t;
     1.0 - inv * inv * inv
 }
 
-/// Quick launch and soft landing: mostly ease-out with a touch of smoothstep
-/// so the card visibly accelerates off its pile rather than teleporting.
-pub fn travel_ease(t: f32) -> f32 {
-    0.62 * ease_out_cubic(t) + 0.38 * smoothstep(t)
+/// Analytic critically damped spring response for a zero-velocity launch.
+///
+/// The closed-form solution is evaluated from normalized animation time and
+/// duration, so its position does not depend on the display refresh rate.
+/// Normalizing the response at the animation boundary makes the card land
+/// exactly on its target when GPUI finishes the animation.
+pub fn travel_ease(t: f32, duration_ms: f32) -> f32 {
+    const STIFFNESS: f32 = 340.0;
+    let omega = STIFFNESS.sqrt();
+    let elapsed_seconds = t.clamp(0.0, 1.0) * duration_ms.max(1.0) * 0.001;
+    let end_seconds = duration_ms.max(1.0) * 0.001;
+    let response = |seconds: f32| {
+        let decay = (-omega * seconds).exp();
+        1.0 - (1.0 + omega * seconds) * decay
+    };
+    (response(elapsed_seconds) / response(end_seconds)).clamp(0.0, 1.0)
 }
 
 /// Ease-out with a small overshoot (a spring-back feel).
@@ -552,6 +560,20 @@ mod tests {
         assert!(ease_out_back(0.0).abs() < 1e-5);
         assert!((ease_out_back(1.0) - 1.0).abs() < 1e-5);
         assert!((0..100).any(|i| ease_out_back(i as f32 / 100.0) > 1.0));
+    }
+
+    #[test]
+    fn travel_spring_is_monotone_and_lands_exactly_for_each_duration() {
+        for duration in [210.0, 320.0, 430.0] {
+            assert_eq!(travel_ease(0.0, duration), 0.0);
+            assert_eq!(travel_ease(1.0, duration), 1.0);
+            let mut previous = 0.0;
+            for frame in 1..100 {
+                let position = travel_ease(frame as f32 / 100.0, duration);
+                assert!(position >= previous && position <= 1.0);
+                previous = position;
+            }
+        }
     }
 
     #[test]
