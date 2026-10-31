@@ -1184,6 +1184,7 @@ impl SolitaireApp {
             .on_action(cx.listener(Self::on_dismiss))
             .on_action(cx.listener(Self::on_quit_app))
             .on_action(cx.listener(Self::on_toggle_perf))
+            .on_action(cx.listener(Self::on_toggle_four_color_deck))
             // Clicking anywhere discards a stale drag (e.g. a release that
             // happened outside the window and never delivered a drop).
             .on_mouse_down(

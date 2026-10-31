@@ -118,10 +118,6 @@ impl Card {
             face_up,
         }
     }
-
-    pub fn is_red(self) -> bool {
-        self.suit.color() == CardColor::Red
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

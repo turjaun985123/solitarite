@@ -209,8 +209,6 @@ pub struct FlipFrame {
 pub struct Frame {
     pub x: f32,
     pub y: f32,
-    /// Normalised progress of this card's own flight, 0..=1.
-    pub t: f32,
     /// True while the card should cast its larger "in the air" shadow.
     pub lifted: bool,
     pub flip: Option<FlipFrame>,
@@ -290,7 +288,6 @@ impl Flight {
         Frame {
             x,
             y,
-            t,
             lifted: airborne
                 && (arc > 0.0 || flip.is_some() || matches!(self.style, Style::Return)),
             flip,
