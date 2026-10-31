@@ -59,5 +59,7 @@ jobs:
       - name: Report Linux binary size
         if: runner.os == 'Linux'
         run: |
-          stat --format='Executable size: %s bytes' target/release/solitarite
+          binary_size_bytes=$(stat --format='%s' target/release/solitarite)
+          echo "Executable size: ${binary_size_bytes} bytes"
+          test "${binary_size_bytes}" -le 20971520
           size target/release/solitarite
