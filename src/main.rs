@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Solitarite — a full-featured Klondike solitaire game built with GPUI.
 
 mod audio;

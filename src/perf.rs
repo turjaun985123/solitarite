@@ -105,9 +105,15 @@ impl PerfStats {
             };
         }
         let avg = average(&self.intervals);
-        let mut sorted: Vec<f32> = self.intervals.iter().copied().collect();
-        sorted.sort_by(|a, b| a.total_cmp(b));
-        let p95 = sorted[((sorted.len() as f32 * 0.95) as usize).min(sorted.len() - 1)];
+        // Keep the profiler's render-time summary allocation-free. Its bounded
+        // window is small enough to sort on the stack without heap growth.
+        let mut sorted = [0.0f32; WINDOW];
+        let len = self.intervals.len();
+        for (slot, value) in sorted.iter_mut().zip(self.intervals.iter().copied()) {
+            *slot = value;
+        }
+        sorted[..len].sort_unstable_by(f32::total_cmp);
+        let p95 = sorted[((len as f32 * 0.95) as usize).min(len - 1)];
         Summary {
             fps: if avg > 0.0 { 1000.0 / avg } else { 0.0 },
             interval_avg_ms: avg,

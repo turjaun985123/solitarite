@@ -88,7 +88,7 @@ pub fn card_cream() -> Rgba {
 }
 
 pub fn card_paper() -> Rgba {
-    rgb(0xfffdf8)
+    rgb(0xf8f6f0)
 }
 
 pub fn card_edge() -> Rgba {

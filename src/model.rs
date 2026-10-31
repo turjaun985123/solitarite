@@ -1035,12 +1035,12 @@ mod tests {
 
     #[test]
     fn invalid_saved_games_reject_duplicate_or_mismatched_cards() {
-        let mut game = game();
-        assert!(game.is_valid());
+        let mut valid_game = game();
+        assert!(valid_game.is_valid());
 
-        let duplicate = game.stock[0];
-        game.stock[1] = duplicate;
-        assert!(!game.is_valid());
+        let duplicate = valid_game.stock[0];
+        valid_game.stock[1] = duplicate;
+        assert!(!valid_game.is_valid());
 
         let mut game = game();
         game.stock[0].rank = Rank::King;
