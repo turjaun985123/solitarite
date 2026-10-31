@@ -36,6 +36,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes \
             build-essential pkg-config \
+            libasound2-dev \
             libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libwayland-dev libfontconfig1-dev libfreetype6-dev \
             libvulkan-dev libgl1-mesa-dev libxcb1-dev libxcb-render0-dev \
@@ -47,6 +48,9 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked
 
       - name: Build release binary
         run: cargo build --locked --release
@@ -74,6 +78,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
       - name: Download packaged binaries
         uses: actions/download-artifact@v4
         with:
