@@ -11,7 +11,7 @@ mod ui;
 
 use gpui::{
     App, AppContext as _, Application, Bounds, Focusable as _, KeyBinding, WindowBounds,
-    WindowOptions, px, size,
+    WindowDecorations, WindowOptions, px, size,
 };
 
 use ui::{
@@ -28,6 +28,8 @@ fn main() {
             KeyBinding::new("d", DailyDeal, Some("Solitaire")),
             KeyBinding::new("r", RestartDeal, Some("Solitaire")),
             KeyBinding::new("ctrl-z", UndoMove, Some("Solitaire")),
+            KeyBinding::new("z", UndoMove, Some("Solitaire")),
+            KeyBinding::new("u", UndoMove, Some("Solitaire")),
             KeyBinding::new("ctrl-y", RedoMove, Some("Solitaire")),
             KeyBinding::new("ctrl-shift-z", RedoMove, Some("Solitaire")),
             KeyBinding::new("h", ShowHint, Some("Solitaire")),
@@ -51,6 +53,10 @@ fn main() {
                     is_movable: true,
                     is_resizable: true,
                     is_minimizable: true,
+                    // Draw our own titlebar and window controls on compositors
+                    // that support client-side decorations. GPUI falls back to
+                    // server decorations automatically when they are unavailable.
+                    window_decorations: Some(WindowDecorations::Client),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("Solitarite — Klondike Solitaire".into()),
                         ..Default::default()

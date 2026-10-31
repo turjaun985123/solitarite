@@ -61,7 +61,9 @@ impl Layout {
             })
             .fold(0.0f32, f32::max);
         let step = if max_units > 0.0 {
-            ((tableau_h - ch) / max_units).clamp(6.0, ch * 0.24)
+            // Fit the tallest column into the available board height. The
+            // old 6px floor caused long columns to spill below short windows.
+            ((tableau_h - ch).max(0.0) / max_units).clamp(2.0, ch * 0.24)
         } else {
             ch * 0.24
         };
@@ -560,6 +562,20 @@ mod tests {
             let (ox, oy) = l.board_origin(vw, vh);
             assert!(ox >= 0.0 && oy >= 92.0, "origin {ox},{oy} at {vw}x{vh}");
         }
+    }
+
+    #[test]
+    fn long_tableau_columns_fit_inside_a_small_window() {
+        let mut game = game();
+        game.tableau[0] = vec![game.tableau[0][0]; 20];
+        let layout = Layout::compute(820.0, 600.0, &game);
+        let tallest = 19.0 * layout.up_step;
+        assert!(
+            layout.ch + tallest <= layout.tableau_h + 0.1,
+            "card bottom {} exceeds tableau height {}",
+            layout.ch + tallest,
+            layout.tableau_h
+        );
     }
 
     #[test]

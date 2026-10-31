@@ -294,11 +294,35 @@ impl Game {
         let mut total = 0usize;
         for card in all {
             total += 1;
-            if !ids.insert(card.id) || card.id >= 52 {
+            let canonical_id = card.suit.index() * 13 + card.rank.value() as usize - 1;
+            if !ids.insert(card.id) || card.id as usize != canonical_id {
                 return false;
             }
         }
         total == 52
+            && self.stock.iter().all(|card| !card.face_up)
+            && self.waste.iter().all(|card| card.face_up)
+            && self.foundations.iter().enumerate().all(|(suit, pile)| {
+                pile.iter().enumerate().all(|(rank, card)| {
+                    card.face_up
+                        && card.suit.index() == suit
+                        && card.rank.value() as usize == rank + 1
+                })
+            })
+            && self.tableau.iter().all(|pile| {
+                let mut found_face_up = false;
+                pile.iter().all(|card| {
+                    if card.face_up {
+                        found_face_up = true;
+                        true
+                    } else {
+                        !found_face_up
+                    }
+                })
+            })
+            && self.undo.len() <= 300
+            && self.redo.len() <= 300
+            && self.undo.iter().chain(&self.redo).all(Snapshot::is_valid)
     }
 
     pub fn cards_at(&self, source: PileRef, index: usize) -> Option<&[Card]> {
@@ -378,6 +402,28 @@ impl Game {
         let first = *cards.first()?;
         let dest = PileRef::Foundation(first.suit.index());
         self.can_move(source, index, dest).then_some(dest)
+    }
+
+    /// Choose a sensible one-click destination: foundation first, then the
+    /// deepest legal occupied tableau column, then an empty column for a King.
+    pub fn smart_move_destination(&self, source: PileRef, index: usize) -> Option<PileRef> {
+        if let Some(dest) = self.foundation_destination(source, index) {
+            return Some(dest);
+        }
+
+        (0..7)
+            .filter(|&pile| !self.tableau[pile].is_empty())
+            .filter(|&pile| self.can_move(source, index, PileRef::Tableau(pile)))
+            .max_by_key(|&pile| self.tableau[pile].len())
+            .map(PileRef::Tableau)
+            .or_else(|| {
+                (0..7)
+                    .find(|&pile| {
+                        self.tableau[pile].is_empty()
+                            && self.can_move(source, index, PileRef::Tableau(pile))
+                    })
+                    .map(PileRef::Tableau)
+            })
     }
 
     pub fn draw(&mut self) -> bool {
@@ -656,26 +702,50 @@ impl Game {
     }
 
     fn auto_move_one_internal(&mut self) -> bool {
-        let Some((source, index, dest)) = self.find_foundation_move() else {
+        let Some((source, index, dest)) = self.find_safe_foundation_move() else {
             return false;
         };
         self.apply_move(source, index, dest)
     }
 
-    pub fn find_foundation_move(&self) -> Option<(PileRef, usize, PileRef)> {
-        if let Some(top) = self.waste.len().checked_sub(1)
-            && let Some(dest) = self.foundation_destination(PileRef::Waste, top)
-        {
-            return Some((PileRef::Waste, top, dest));
-        }
-        for pile in 0..7 {
-            if let Some(top) = self.tableau[pile].len().checked_sub(1)
-                && let Some(dest) = self.foundation_destination(PileRef::Tableau(pile), top)
-            {
-                return Some((PileRef::Tableau(pile), top, dest));
+    /// Pick a foundation move that does not get more than one rank ahead of
+    /// either suit in the opposite color. Aces and twos are always safe.
+    fn find_safe_foundation_move(&self) -> Option<(PileRef, usize, PileRef)> {
+        let candidates = std::iter::once(PileRef::Waste).chain((0..7).map(PileRef::Tableau));
+        for source in candidates {
+            let Some(index) = (match source {
+                PileRef::Waste => self.waste.len().checked_sub(1),
+                PileRef::Tableau(pile) => self.tableau[pile].len().checked_sub(1),
+                PileRef::Foundation(_) => None,
+            }) else {
+                continue;
+            };
+            let Some(card) = self.cards_at(source, index).and_then(|cards| cards.first()) else {
+                continue;
+            };
+            let Some(dest) = self.foundation_destination(source, index) else {
+                continue;
+            };
+            if card.rank.value() <= 2 || self.opposite_foundations_reached(card) {
+                return Some((source, index, dest));
             }
         }
         None
+    }
+
+    fn opposite_foundations_reached(&self, card: &Card) -> bool {
+        let opposite_suits = match card.suit.color() {
+            CardColor::Red => [Suit::Spades, Suit::Clubs],
+            CardColor::Black => [Suit::Hearts, Suit::Diamonds],
+        };
+        let required_rank = card.rank.value().saturating_sub(1) as usize;
+        opposite_suits
+            .iter()
+            .all(|suit| self.foundations[suit.index()].len() >= required_rank)
+    }
+
+    pub fn find_foundation_move(&self) -> Option<(PileRef, usize, PileRef)> {
+        self.find_safe_foundation_move()
     }
 
     pub fn find_hint(&self) -> Option<Hint> {
@@ -684,7 +754,7 @@ impl Game {
         }
 
         if let Some(top) = self.waste.len().checked_sub(1)
-            && let Some(dest) = self.foundation_destination(PileRef::Waste, top)
+            && let Some(dest) = self.find_safe_foundation_for(PileRef::Waste, top)
         {
             return Some(Hint::Move {
                 source: PileRef::Waste,
@@ -695,7 +765,7 @@ impl Game {
 
         for pile in 0..7 {
             if let Some(top) = self.tableau[pile].len().checked_sub(1)
-                && let Some(dest) = self.foundation_destination(PileRef::Tableau(pile), top)
+                && let Some(dest) = self.find_safe_foundation_for(PileRef::Tableau(pile), top)
             {
                 return Some(Hint::Move {
                     source: PileRef::Tableau(pile),
@@ -741,17 +811,13 @@ impl Game {
                     {
                         continue;
                     }
-                    let dest_empty = self.tableau[dest].is_empty();
-                    if dest_empty && index == 0 && !reveals {
+                    // Lateral shuffles do not make progress and can ping-pong
+                    // forever between equivalent columns. Keep tableau hints
+                    // focused on moves that reveal a hidden card.
+                    if !reveals {
                         continue;
                     }
-                    let score = if reveals {
-                        12
-                    } else if dest_empty {
-                        1
-                    } else {
-                        4
-                    };
+                    let score = 12;
                     if best
                         .as_ref()
                         .is_none_or(|(best_score, _)| score > *best_score)
@@ -782,8 +848,55 @@ impl Game {
         }
     }
 
+    fn find_safe_foundation_for(&self, source: PileRef, index: usize) -> Option<PileRef> {
+        let card = self.cards_at(source, index)?.first()?;
+        let dest = self.foundation_destination(source, index)?;
+        (card.rank.value() <= 2 || self.opposite_foundations_reached(card)).then_some(dest)
+    }
+
     pub fn progress(&self) -> f32 {
         self.total_home() as f32 / 52.0
+    }
+}
+
+impl Snapshot {
+    fn is_valid(&self) -> bool {
+        let mut ids = HashSet::new();
+        let all = self
+            .stock
+            .iter()
+            .chain(self.waste.iter())
+            .chain(self.foundations.iter().flatten())
+            .chain(self.tableau.iter().flatten());
+        let mut total = 0usize;
+        for card in all {
+            total += 1;
+            let canonical_id = card.suit.index() * 13 + card.rank.value() as usize - 1;
+            if card.id as usize != canonical_id || !ids.insert(card.id) {
+                return false;
+            }
+        }
+        total == 52
+            && self.stock.iter().all(|card| !card.face_up)
+            && self.waste.iter().all(|card| card.face_up)
+            && self.foundations.iter().enumerate().all(|(suit, pile)| {
+                pile.iter().enumerate().all(|(rank, card)| {
+                    card.face_up
+                        && card.suit.index() == suit
+                        && card.rank.value() as usize == rank + 1
+                })
+            })
+            && self.tableau.iter().all(|pile| {
+                let mut found_face_up = false;
+                pile.iter().all(|card| {
+                    if card.face_up {
+                        found_face_up = true;
+                        true
+                    } else {
+                        !found_face_up
+                    }
+                })
+            })
     }
 }
 
@@ -907,6 +1020,84 @@ mod tests {
     }
 
     #[test]
+    fn multi_card_tableau_run_cannot_move_to_a_foundation() {
+        let mut game = game();
+        game.tableau[0] = vec![
+            Card::new(12, Suit::Spades, Rank::King, true),
+            Card::new(24, Suit::Hearts, Rank::Queen, true),
+        ];
+        assert!(!game.can_move(
+            PileRef::Tableau(0),
+            0,
+            PileRef::Foundation(Suit::Spades.index())
+        ));
+    }
+
+    #[test]
+    fn invalid_saved_games_reject_duplicate_or_mismatched_cards() {
+        let mut game = game();
+        assert!(game.is_valid());
+
+        let duplicate = game.stock[0];
+        game.stock[1] = duplicate;
+        assert!(!game.is_valid());
+
+        let mut game = game();
+        game.stock[0].rank = Rank::King;
+        assert!(!game.is_valid());
+
+        let mut game = game();
+        assert!(game.draw());
+        let duplicate = game.undo[0].stock[0];
+        game.undo[0].stock[1] = duplicate;
+        assert!(!game.is_valid());
+    }
+
+    #[test]
+    fn automatic_foundation_moves_wait_for_opposite_color_support() {
+        let mut game = game();
+        game.stock.clear();
+        game.waste = vec![Card::new(28, Suit::Diamonds, Rank::Three, true)];
+        game.foundations[Suit::Diamonds.index()] = vec![
+            Card::new(26, Suit::Diamonds, Rank::Ace, true),
+            Card::new(27, Suit::Diamonds, Rank::Two, true),
+        ];
+        assert!(game.find_foundation_move().is_none());
+
+        for suit in [Suit::Spades, Suit::Clubs] {
+            let base = suit.index() as u8 * 13;
+            game.foundations[suit.index()] = vec![
+                Card::new(base, suit, Rank::Ace, true),
+                Card::new(base + 1, suit, Rank::Two, true),
+            ];
+        }
+        assert_eq!(
+            game.find_foundation_move(),
+            Some((
+                PileRef::Waste,
+                0,
+                PileRef::Foundation(Suit::Diamonds.index())
+            ))
+        );
+    }
+
+    #[test]
+    fn hints_do_not_recommend_lateral_ping_pong_moves() {
+        let mut game = game();
+        game.tableau[0] = vec![Card::new(7, Suit::Spades, Rank::Eight, true)];
+        game.tableau[1] = vec![Card::new(19, Suit::Hearts, Rank::Seven, true)];
+        let hint = game.find_hint();
+        assert!(!matches!(
+            hint,
+            Some(Hint::Move {
+                source: PileRef::Tableau(_),
+                dest: PileRef::Tableau(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn undo_and_redo_restore_the_board() {
         let mut game = game();
         let stock = game.stock.len();
@@ -918,6 +1109,44 @@ mod tests {
         assert_eq!(game.moves, moves);
         assert!(game.redo());
         assert_ne!(game.stock.len(), stock);
+    }
+
+    #[test]
+    fn undo_restores_a_card_revealed_by_the_move() {
+        let mut game = game();
+        game.tableau[0] = vec![
+            Card::new(21, Suit::Hearts, Rank::Nine, false),
+            Card::new(7, Suit::Spades, Rank::Eight, true),
+        ];
+        game.tableau[1] = vec![Card::new(19, Suit::Hearts, Rank::Seven, true)];
+        assert!(game.try_move(PileRef::Tableau(1), 0, PileRef::Tableau(0), false));
+        assert!(game.tableau[0][0].face_up);
+        assert!(game.undo());
+        assert!(!game.tableau[0][0].face_up);
+        assert!(game.tableau[1][0].face_up);
+    }
+
+    #[test]
+    fn foundation_top_can_be_pulled_back_to_tableau() {
+        let mut game = game();
+        game.foundations[Suit::Spades.index()] = vec![Card::new(0, Suit::Spades, Rank::Ace, true)];
+        game.tableau[0] = vec![Card::new(19, Suit::Hearts, Rank::Seven, true)];
+        assert!(game.can_move(
+            PileRef::Foundation(Suit::Spades.index()),
+            0,
+            PileRef::Tableau(0)
+        ));
+    }
+
+    #[test]
+    fn smart_move_prefers_foundation_before_tableau() {
+        let mut game = game();
+        game.waste = vec![Card::new(0, Suit::Spades, Rank::Ace, true)];
+        game.tableau[0] = vec![Card::new(1, Suit::Hearts, Rank::Two, true)];
+        assert_eq!(
+            game.smart_move_destination(PileRef::Waste, 0),
+            Some(PileRef::Foundation(Suit::Spades.index()))
+        );
     }
 
     #[test]
