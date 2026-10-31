@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt as _, App, Context, Div, FontWeight, Render, SharedString, Window,
-    div, linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt as _, App, Context, Div, FontWeight, Render, SharedString, Window, div,
+    linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
 };
 
 use crate::model::{Card, Rank};

@@ -258,12 +258,17 @@ impl Flight {
         // curve instead of a ruler-straight line.
         if self.style == Style::Travel && dist > 80.0 {
             let side = if dx >= 0.0 { 1.0 } else { -1.0 };
-            x += lift * side * (dist * 0.012).min(6.0) * if dy.abs() > dx.abs() { 1.0 } else { 0.0 };
+            x +=
+                lift * side * (dist * 0.012).min(6.0) * if dy.abs() > dx.abs() { 1.0 } else { 0.0 };
         }
         y = y.max(-40.0);
 
         let flip = if self.flips() {
-            let (f0, f1) = if self.moves() { (0.04, 0.72) } else { (0.0, 1.0) };
+            let (f0, f1) = if self.moves() {
+                (0.04, 0.72)
+            } else {
+                (0.0, 1.0)
+            };
             let fp = ((t - f0) / (f1 - f0)).clamp(0.0, 1.0);
             let angle = PI * fp;
             Some(FlipFrame {
@@ -284,7 +289,8 @@ impl Flight {
             x,
             y,
             t,
-            lifted: airborne && (arc > 0.0 || flip.is_some() || matches!(self.style, Style::Return)),
+            lifted: airborne
+                && (arc > 0.0 || flip.is_some() || matches!(self.style, Style::Return)),
             flip,
         }
     }
@@ -574,7 +580,12 @@ mod tests {
         }
         if let Some((source, index, dest)) = found {
             let before = poses(&game, &l);
-            assert!(game.try_move(PileRef::Tableau(source), index, PileRef::Tableau(dest), false));
+            assert!(game.try_move(
+                PileRef::Tableau(source),
+                index,
+                PileRef::Tableau(dest),
+                false
+            ));
             let l2 = Layout::compute(1120.0, 760.0, &game);
             let flights = plan(&before, &poses(&game, &l2), Style::Travel);
             assert!(!flights.is_empty());

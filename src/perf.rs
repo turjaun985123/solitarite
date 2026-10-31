@@ -155,7 +155,10 @@ mod tests {
         let mut stats = PerfStats::new();
         let start = Instant::now();
         for i in 0..120u64 {
-            stats.record(start + Duration::from_micros(i * 16_667), Duration::from_micros(900));
+            stats.record(
+                start + Duration::from_micros(i * 16_667),
+                Duration::from_micros(900),
+            );
         }
         let s = stats.summary();
         assert!((s.fps - 60.0).abs() < 1.0, "fps {}", s.fps);

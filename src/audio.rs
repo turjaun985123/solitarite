@@ -187,7 +187,15 @@ fn sweep(from: f32, to: f32, seconds: f32, decay: f32, gain: f32) -> Vec<f32> {
 /// Band-limited noise "paper" texture: a one-pole low-pass whose cutoff
 /// sweeps from `start_cut` to `end_cut` (0..1, larger is brighter) with a
 /// shaped envelope. This is the core of every card slide/flick.
-fn paper(seconds: f32, start_cut: f32, end_cut: f32, attack: f32, decay: f32, gain: f32, seed: u32) -> Vec<f32> {
+fn paper(
+    seconds: f32,
+    start_cut: f32,
+    end_cut: f32,
+    attack: f32,
+    decay: f32,
+    gain: f32,
+    seed: u32,
+) -> Vec<f32> {
     let n = samples_for(seconds);
     let mut noise = Noise(seed);
     let mut low = 0.0f32;
@@ -226,8 +234,18 @@ fn render(sound: Sound) -> Vec<f32> {
     match sound {
         Sound::Deal => {
             // Card sliding off the stock: airy swish with a soft tick at the end.
-            mix_into(&mut out, &paper(0.16, 0.10, 0.42, 0.012, 14.0, 5.0, 11), 0, 0.55);
-            mix_into(&mut out, &tone(1100.0, 0.03, 160.0, 0.5), samples_for(0.012), 0.10);
+            mix_into(
+                &mut out,
+                &paper(0.16, 0.10, 0.42, 0.012, 14.0, 5.0, 11),
+                0,
+                0.55,
+            );
+            mix_into(
+                &mut out,
+                &tone(1100.0, 0.03, 160.0, 0.5),
+                samples_for(0.012),
+                0.10,
+            );
         }
         Sound::Recycle => {
             for k in 0..5 {
@@ -259,13 +277,23 @@ fn render(sound: Sound) -> Vec<f32> {
         Sound::Place => {
             // Card snapping onto felt: low thump + crisp paper click.
             mix_into(&mut out, &sweep(190.0, 78.0, 0.11, 34.0, 0.9), 0, 0.85);
-            mix_into(&mut out, &paper(0.045, 0.55, 0.30, 0.0008, 90.0, 6.0, 7), 0, 0.55);
+            mix_into(
+                &mut out,
+                &paper(0.045, 0.55, 0.30, 0.0008, 90.0, 6.0, 7),
+                0,
+                0.55,
+            );
             mix_into(&mut out, &tone(2400.0, 0.012, 380.0, 0.5), 0, 0.12);
         }
         Sound::Foundation => {
             // Snap plus a warm bell: the "success" voice of the game.
             mix_into(&mut out, &sweep(210.0, 90.0, 0.09, 40.0, 0.8), 0, 0.6);
-            mix_into(&mut out, &paper(0.04, 0.55, 0.30, 0.0008, 100.0, 6.0, 9), 0, 0.4);
+            mix_into(
+                &mut out,
+                &paper(0.04, 0.55, 0.30, 0.0008, 100.0, 6.0, 9),
+                0,
+                0.4,
+            );
             for (i, (freq, gain)) in [(1318.5f32, 0.40f32), (1976.0, 0.20), (2637.0, 0.10)]
                 .iter()
                 .enumerate()
@@ -280,23 +308,43 @@ fn render(sound: Sound) -> Vec<f32> {
         }
         Sound::Flip => {
             // Quick flick with a rising edge, like thumbing a card over.
-            mix_into(&mut out, &paper(0.085, 0.14, 0.60, 0.004, 30.0, 5.0, 21), 0, 0.55);
+            mix_into(
+                &mut out,
+                &paper(0.085, 0.14, 0.60, 0.004, 30.0, 5.0, 21),
+                0,
+                0.55,
+            );
             mix_into(&mut out, &sweep(520.0, 980.0, 0.05, 55.0, 0.5), 0, 0.12);
         }
         Sound::Pickup => {
-            mix_into(&mut out, &paper(0.04, 0.30, 0.52, 0.002, 80.0, 5.0, 33), 0, 0.35);
+            mix_into(
+                &mut out,
+                &paper(0.04, 0.30, 0.52, 0.002, 80.0, 5.0, 33),
+                0,
+                0.35,
+            );
             mix_into(&mut out, &tone(760.0, 0.035, 130.0, 0.5), 0, 0.10);
         }
         Sound::Reject => {
             mix_into(&mut out, &sweep(150.0, 92.0, 0.16, 20.0, 0.9), 0, 0.7);
-            mix_into(&mut out, &paper(0.05, 0.30, 0.18, 0.001, 70.0, 5.0, 41), 0, 0.30);
+            mix_into(
+                &mut out,
+                &paper(0.05, 0.30, 0.18, 0.001, 70.0, 5.0, 41),
+                0,
+                0.30,
+            );
         }
         Sound::Undo => {
             // Reversed swish: swells in, then taps out.
             let mut swish = paper(0.14, 0.42, 0.10, 0.002, 12.0, 5.0, 55);
             swish.reverse();
             mix_into(&mut out, &swish, 0, 0.5);
-            mix_into(&mut out, &sweep(420.0, 310.0, 0.08, 40.0, 0.6), samples_for(0.10), 0.22);
+            mix_into(
+                &mut out,
+                &sweep(420.0, 310.0, 0.08, 40.0, 0.6),
+                samples_for(0.10),
+                0.22,
+            );
         }
         Sound::Victory => {
             // Bright major arpeggio of bell tones with a shimmering tail.

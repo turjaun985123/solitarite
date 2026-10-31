@@ -344,7 +344,11 @@ impl SolitaireApp {
         self.save_now();
         self.play_sound(Sound::Place);
         self.toast(
-            if self.settings.sound_effects { "Sound effects enabled" } else { "Sound effects muted" },
+            if self.settings.sound_effects {
+                "Sound effects enabled"
+            } else {
+                "Sound effects muted"
+            },
             cx,
         );
         cx.notify();
@@ -513,7 +517,9 @@ impl SolitaireApp {
     }
 
     fn is_flying(&self, id: u8) -> bool {
-        self.flights.iter().any(|active| active.flight.card.id == id)
+        self.flights
+            .iter()
+            .any(|active| active.flight.card.id == id)
     }
 
     fn is_drag_source(&self, id: u8) -> bool {
@@ -570,7 +576,11 @@ impl SolitaireApp {
         let before = self.pose_snapshot();
         let recycling = self.game.stock.is_empty();
         if self.game.draw() {
-            self.play_sound(if recycling { Sound::Recycle } else { Sound::Deal });
+            self.play_sound(if recycling {
+                Sound::Recycle
+            } else {
+                Sound::Deal
+            });
             self.animate_from(before, Style::Travel, cx);
             self.selected = None;
             self.hint = None;
@@ -752,7 +762,11 @@ impl SolitaireApp {
         let landing = self.animate_from(before, Style::Return, cx);
         self.play_sound_after(
             landing,
-            if rejected { Sound::Reject } else { Sound::Place },
+            if rejected {
+                Sound::Reject
+            } else {
+                Sound::Place
+            },
             cx,
         );
         cx.notify();
@@ -1139,11 +1153,7 @@ impl SolitaireApp {
                             .with_animation(
                                 ("toast", self.toast_gen),
                                 Animation::new(Duration::from_millis(240)),
-                                |element, delta| {
-                                    element
-                                        .opacity(delta)
-                                        .mt(px((1.0 - delta) * 8.0))
-                                },
+                                |element, delta| element.opacity(delta).mt(px((1.0 - delta) * 8.0)),
                             ),
                     ),
             );
@@ -1632,8 +1642,7 @@ impl SolitaireApp {
         let back = self.settings.card_back;
         let suit = crate::model::Suit::ALL[pile];
         let drop_target = self.is_drop_target(PileRef::Foundation(pile));
-        let highlighted =
-            self.hint_destination() == Some(PileRef::Foundation(pile)) || drop_target;
+        let highlighted = self.hint_destination() == Some(PileRef::Foundation(pile)) || drop_target;
         let cards = &self.game.foundations[pile];
 
         let mut foundation = div()
@@ -1980,7 +1989,10 @@ impl SolitaireApp {
         let headline = if summary.frames > 2 {
             format!(
                 "{:.0} fps   ·   frame {:.1} ms avg   {:.1} p95   {:.1} max",
-                summary.fps, summary.interval_avg_ms, summary.interval_p95_ms, summary.interval_max_ms
+                summary.fps,
+                summary.interval_avg_ms,
+                summary.interval_p95_ms,
+                summary.interval_max_ms
             )
         } else {
             "idle — move a card to measure animation frames".to_string()
@@ -2018,7 +2030,11 @@ impl SolitaireApp {
             .child(line(format!(
                 "flights {}   animations {}   volume {:.0}%",
                 self.flights.len(),
-                if self.settings.animations { "on" } else { "off" },
+                if self.settings.animations {
+                    "on"
+                } else {
+                    "off"
+                },
                 self.settings.volume * 100.0,
             )))
     }
