@@ -63,6 +63,7 @@ themes, card backs, and a keyboard-friendly interface.
 | Pause / resume | `P` |
 | Statistics | `S` |
 | Settings | `Ctrl+Shift+S` |
+| Toggle four-color deck | `C` |
 | Help | `F1` |
 | Performance overlay | `F3` |
 | Draw from stock | `Space` |

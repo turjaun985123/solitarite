@@ -18,7 +18,8 @@ use gpui::{
 
 use ui::{
     AutoFinish, DailyDeal, Dismiss, DrawCards, NewGame, PauseGame, QuitApp, RedoMove, RestartDeal,
-    ShowHelp, ShowHint, ShowSettings, ShowStats, SolitaireApp, TogglePerf, UndoMove,
+    ShowHelp, ShowHint, ShowSettings, ShowStats, SolitaireApp, ToggleFourColorDeck, TogglePerf,
+    UndoMove,
 };
 
 fn main() {
@@ -41,6 +42,7 @@ fn main() {
             KeyBinding::new("ctrl-shift-s", ShowSettings, Some("Solitaire")),
             KeyBinding::new("f1", ShowHelp, Some("Solitaire")),
             KeyBinding::new("f3", TogglePerf, Some("Solitaire")),
+            KeyBinding::new("c", ToggleFourColorDeck, Some("Solitaire")),
             KeyBinding::new("space", DrawCards, Some("Solitaire")),
             KeyBinding::new("escape", Dismiss, Some("Solitaire")),
             KeyBinding::new("ctrl-q", QuitApp, None),

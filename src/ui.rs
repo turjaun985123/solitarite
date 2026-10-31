@@ -17,7 +17,7 @@ use crate::model::{Card, Game, Hint, PileRef, Rules, Scoring, format_score, form
 use crate::motion::{self, Flight, Layout, Pose, Style};
 use crate::perf::PerfStats;
 use crate::persistence::{self, CardBack, SaveData, Settings, Stats, Theme, save_path_display};
-use crate::theme::{Fade as _, Palette, card_red, gold, overlay};
+use crate::theme::{Fade as _, Palette, card_suit_ink, gold, overlay};
 
 actions!(
     solitarite,
@@ -37,6 +37,7 @@ actions!(
         Dismiss,
         QuitApp,
         TogglePerf,
+        ToggleFourColorDeck,
     ]
 );
 
@@ -395,6 +396,20 @@ impl SolitaireApp {
                 "Sound effects enabled"
             } else {
                 "Sound effects muted"
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn toggle_four_color_deck(&mut self, cx: &mut Context<Self>) {
+        self.settings.four_color_deck = !self.settings.four_color_deck;
+        self.save_now();
+        self.toast(
+            if self.settings.four_color_deck {
+                "Four-color deck enabled"
+            } else {
+                "Four-color deck disabled"
             },
             cx,
         );
@@ -1887,7 +1902,7 @@ impl SolitaireApp {
                             .w(px(cw))
                             .h(px(ch))
                             .when(self.is_card_hidden(card.id), |this| this.opacity(0.0))
-                            .child(card_view(card, cw, ch, back)),
+                            .child(card_view(card, cw, ch, back, self.settings.four_color_deck)),
                     );
                 }
             }
@@ -1951,11 +1966,9 @@ impl SolitaireApp {
                         div()
                             .text_size(px(cw * 0.26))
                             .line_height(px(cw * 0.28))
-                            .text_color(if suit.color() == crate::model::CardColor::Red {
-                                card_red().fade(0.34)
-                            } else {
-                                rgb(0x111111).fade(0.28)
-                            })
+                            .text_color(
+                                card_suit_ink(suit, self.settings.four_color_deck).fade(0.34),
+                            )
                             .child(suit.symbol()),
                     )
                     .child(
@@ -1988,7 +2001,13 @@ impl SolitaireApp {
                             .w(px(cw))
                             .h(px(ch))
                             .when(self.is_card_hidden(card.id), |this| this.opacity(0.0))
-                            .child(card_view(*card, cw, ch, back)),
+                            .child(card_view(
+                                *card,
+                                cw,
+                                ch,
+                                back,
+                                self.settings.four_color_deck,
+                            )),
                     );
                 }
             }
@@ -2122,10 +2141,11 @@ impl SolitaireApp {
     ) -> impl IntoElement + use<> {
         let palette = self.settings.theme.palette();
         let back = self.settings.card_back;
+        let four_color = self.settings.four_color_deck;
         let selected = self.is_selected(source, index);
         let hinted = self.is_hint_source(source, index);
         let hidden = self.is_card_hidden(card.id);
-        let mut face = card_view(card, cw, ch, back);
+        let mut face = card_view(card, cw, ch, back, four_color);
         if selected {
             face = face.border_2().border_color(gold()).shadow_lg();
         } else if hinted {
@@ -2201,7 +2221,7 @@ impl SolitaireApp {
                         .map_or(current_mouse, |(_, position)| position);
                     this.begin_drag(started, grab, start_mouse, cx);
                 });
-                cx.new(|_| DragGhost::new(cards.clone(), cw, ch, back, grab))
+                cx.new(|_| DragGhost::new(cards.clone(), cw, ch, back, four_color, grab))
             });
         }
         element
@@ -2213,6 +2233,7 @@ impl SolitaireApp {
     fn render_flight(&self, active: &ActiveFlight, cw: f32, ch: f32) -> impl IntoElement + use<> {
         let flight = active.flight;
         let back = self.settings.card_back;
+        let four_color = self.settings.four_color_deck;
         let total = flight.total_ms();
         let key = (active.serial << 6) ^ flight.card.id as u64;
 
@@ -2225,7 +2246,7 @@ impl SolitaireApp {
             .rounded(px(cw * 0.065));
         if !flight.flips() {
             // Static content is built once; flipping cards rebuild each frame.
-            base = base.child(card_view(flight.card, cw, ch, back));
+            base = base.child(card_view(flight.card, cw, ch, back, four_color));
         }
 
         base.with_animation(
@@ -2246,6 +2267,7 @@ impl SolitaireApp {
                         flip.scale_x,
                         flip.show_face_up,
                         flip.boost,
+                        four_color,
                     )),
                     None => element,
                 }
@@ -2675,6 +2697,18 @@ impl SolitaireApp {
                 }),
             ))
             .child(menu_item(
+                "om-four-color",
+                "Four-Color Deck",
+                "C",
+                self.settings.four_color_deck,
+                true,
+                p,
+                cx.listener(|this, _, _, cx| {
+                    this.menu = None;
+                    this.toggle_four_color_deck(cx);
+                }),
+            ))
+            .child(menu_item(
                 "om-sound",
                 "Sound Effects",
                 "",
@@ -2925,6 +2959,14 @@ impl SolitaireApp {
                 "set-animations",
                 p,
                 cx.listener(|this, _, _, cx| this.toggle_animations(cx)),
+            ))
+            .child(toggle_row(
+                "FOUR-COLOR DECK",
+                "Diamonds are blue and clubs are green for faster suit recognition. Shortcut: C.",
+                self.settings.four_color_deck,
+                "set-four-color-deck",
+                p,
+                cx.listener(|this, _, _, cx| this.toggle_four_color_deck(cx)),
             ))
             .child(toggle_row(
                 "SOUND EFFECTS",
@@ -3972,6 +4014,15 @@ impl SolitaireApp {
 
     fn on_toggle_perf(&mut self, _: &TogglePerf, _: &mut Window, cx: &mut Context<Self>) {
         self.toggle_perf(cx);
+    }
+
+    fn on_toggle_four_color_deck(
+        &mut self,
+        _: &ToggleFourColorDeck,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_four_color_deck(cx);
     }
 }
 

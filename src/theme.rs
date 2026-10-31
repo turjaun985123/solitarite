@@ -1,5 +1,6 @@
 use gpui::{Rgba, rgb, rgba};
 
+use crate::model::{CardColor, Suit};
 use crate::persistence::{CardBack, Theme};
 
 #[derive(Clone, Copy)]
@@ -81,6 +82,21 @@ pub fn card_red() -> Rgba {
 
 pub fn card_black() -> Rgba {
     rgb(0x18232d)
+}
+
+pub fn card_suit_ink(suit: Suit, four_color: bool) -> Rgba {
+    if four_color {
+        match suit {
+            Suit::Diamonds => rgb(0x1b6ec2),
+            Suit::Clubs => rgb(0x1e824c),
+            Suit::Hearts => card_red(),
+            Suit::Spades => card_black(),
+        }
+    } else if suit.color() == CardColor::Red {
+        card_red()
+    } else {
+        card_black()
+    }
 }
 
 pub fn card_cream() -> Rgba {
