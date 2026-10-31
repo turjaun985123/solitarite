@@ -51,7 +51,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test
+
+      - name: Save resolved lockfile
+        if: matrix.os == 'linux-x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Build release binary
         run: cargo build --locked --release
