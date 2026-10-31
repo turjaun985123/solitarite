@@ -1057,6 +1057,7 @@ mod tests {
     fn automatic_foundation_moves_wait_for_opposite_color_support() {
         let mut game = game();
         game.stock.clear();
+        game.tableau = Default::default();
         game.waste = vec![Card::new(28, Suit::Diamonds, Rank::Three, true)];
         game.foundations[Suit::Diamonds.index()] = vec![
             Card::new(26, Suit::Diamonds, Rank::Ace, true),
@@ -1115,25 +1116,29 @@ mod tests {
     fn undo_restores_a_card_revealed_by_the_move() {
         let mut game = game();
         game.tableau[0] = vec![
-            Card::new(21, Suit::Hearts, Rank::Nine, false),
+            Card::new(19, Suit::Hearts, Rank::Seven, false),
             Card::new(7, Suit::Spades, Rank::Eight, true),
         ];
-        game.tableau[1] = vec![Card::new(19, Suit::Hearts, Rank::Seven, true)];
-        assert!(game.try_move(PileRef::Tableau(1), 0, PileRef::Tableau(0), false));
+        game.tableau[1] = vec![Card::new(21, Suit::Hearts, Rank::Nine, true)];
+        assert!(game.try_move(PileRef::Tableau(0), 1, PileRef::Tableau(1), false));
         assert!(game.tableau[0][0].face_up);
         assert!(game.undo());
         assert!(!game.tableau[0][0].face_up);
-        assert!(game.tableau[1][0].face_up);
+        assert_eq!(game.tableau[0][1].rank, Rank::Eight);
+        assert_eq!(game.tableau[1][0].rank, Rank::Nine);
     }
 
     #[test]
     fn foundation_top_can_be_pulled_back_to_tableau() {
         let mut game = game();
-        game.foundations[Suit::Spades.index()] = vec![Card::new(0, Suit::Spades, Rank::Ace, true)];
-        game.tableau[0] = vec![Card::new(19, Suit::Hearts, Rank::Seven, true)];
+        game.foundations[Suit::Spades.index()] = vec![
+            Card::new(0, Suit::Spades, Rank::Ace, true),
+            Card::new(1, Suit::Spades, Rank::Two, true),
+        ];
+        game.tableau[0] = vec![Card::new(28, Suit::Hearts, Rank::Three, true)];
         assert!(game.can_move(
             PileRef::Foundation(Suit::Spades.index()),
-            0,
+            1,
             PileRef::Tableau(0)
         ));
     }
