@@ -360,7 +360,7 @@ pub fn plan(before: &[Pose], after: &[Pose], style: Style) -> Vec<Flight> {
     // Only big movers are staggered; small fan shifts (draw-three waste) move
     // immediately so the pile re-settles while the new cards arrive.
     let travellers = movers.iter().filter(|m| m.dist > 40.0).count().max(1);
-    let base_stagger = match style {
+    let base_stagger: f32 = match style {
         Style::Settle | Style::Return => 12.0,
         _ if travellers > 12 => 12.0,
         _ if travellers > 4 => 24.0,

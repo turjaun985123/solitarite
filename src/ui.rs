@@ -2519,14 +2519,9 @@ impl SolitaireApp {
             .flex()
             .justify_center()
             .items_center()
-            .on_click(cx.listener(|this, _, _, cx| this.close_modal(cx)))
-            .with_animation(
-                ("modal-entry", modal_animation_id),
-                Animation::new(Duration::from_millis(260)),
-                |element, delta| element.opacity(delta),
-            );
+            .on_click(cx.listener(|this, _, _, cx| this.close_modal(cx)));
 
-        match modal {
+        let content = match modal {
             Modal::Settings => overlay.child(self.render_settings(vw, vh, cx)),
             Modal::Stats => overlay.child(self.render_stats(vw, vh, cx)),
             Modal::Help => overlay.child(self.render_help(vw, vh, cx)),
@@ -2541,7 +2536,12 @@ impl SolitaireApp {
                 }
                 win_overlay.child(self.render_victory(cx))
             }
-        }
+        };
+        content.with_animation(
+            ("modal-entry", modal_animation_id),
+            Animation::new(Duration::from_millis(260)),
+            |element, delta| element.opacity(delta),
+        )
     }
 
     fn render_settings(

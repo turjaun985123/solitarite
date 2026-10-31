@@ -50,8 +50,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run tests
-        run: cargo test
+      - name: Refresh lockfile in CI
+        run: cargo update
 
       - name: Save resolved lockfile
         if: matrix.os == 'linux-x86_64'
@@ -61,6 +61,9 @@ jobs:
           path: Cargo.lock
           if-no-files-found: error
           retention-days: 1
+
+      - name: Run tests
+        run: cargo test --locked
 
       - name: Build release binary
         run: cargo build --locked --release
