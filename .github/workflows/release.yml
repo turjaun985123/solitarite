@@ -45,6 +45,8 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: solitarite
 
       - name: Run tests
         run: cargo test --locked
