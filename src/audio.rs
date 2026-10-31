@@ -1,8 +1,7 @@
 //! Synthesized, layered sound effects.
 //!
-//! A single worker thread owns the `rodio` output stream. Every effect is
-//! rendered once into a PCM buffer at startup (card slides, snaps, flicks,
-//! bells, a riffle shuffle and a victory arpeggio), then mixed concurrently
+//! A single worker thread owns the `rodio` output stream. Effects are rendered
+//! into PCM buffers the first time each one is used, then mixed concurrently
 //! with `play_raw`, so quick sequences of moves overlap instead of queueing
 //! behind each other. UI code only enqueues a tiny message; it never touches
 //! audio hardware. If no output device exists, playback silently does nothing.
@@ -45,6 +44,7 @@ pub enum Sound {
 }
 
 impl Sound {
+    #[cfg(test)]
     const ALL: [Sound; 10] = [
         Sound::Deal,
         Sound::Recycle,
@@ -90,29 +90,20 @@ pub fn play(sound: Sound, volume: f32) {
     }
 }
 
-/// Warm the worker up (builds all buffers and opens the device) off the UI
-/// thread, so the very first card sound has no latency.
-pub fn warm_up() {
-    let _ = AUDIO_TX.get_or_init(start_worker);
-}
-
 fn start_worker() -> Option<SyncSender<Command>> {
     let (sender, receiver) = mpsc::sync_channel::<Command>(32);
     let worker = thread::Builder::new()
         .name("solitarite-audio".into())
         .spawn(move || {
-            let buffers: HashMap<Sound, Vec<f32>> = Sound::ALL
-                .iter()
-                .map(|&sound| (sound, render(sound)))
-                .collect();
             let Ok((_stream, handle)) = OutputStream::try_default() else {
                 return;
             };
+            let mut buffers: HashMap<Sound, Vec<f32>> = HashMap::new();
             let mut seed = 0x9e37_79b9u32;
             while let Ok(command) = receiver.recv() {
-                let Some(samples) = buffers.get(&command.sound) else {
-                    continue;
-                };
+                let samples = buffers
+                    .entry(command.sound)
+                    .or_insert_with(|| render(command.sound));
                 seed = lcg(seed);
                 let unit = (seed >> 8) as f32 / (1u32 << 24) as f32; // 0..1
                 let jitter = command.sound.jitter();

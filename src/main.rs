@@ -21,9 +21,6 @@ use ui::{
 
 fn main() {
     Application::new().run(|cx: &mut App| {
-        // Build the sound buffers and open the audio device off the UI thread.
-        audio::warm_up();
-
         cx.bind_keys([
             KeyBinding::new("f2", NewGame, Some("Solitaire")),
             KeyBinding::new("ctrl-n", NewGame, Some("Solitaire")),

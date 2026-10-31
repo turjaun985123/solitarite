@@ -20,8 +20,6 @@ jobs:
             runner: ubuntu-24.04
           - os: macos
             runner: macos-latest
-          - os: windows-x86_64
-            runner: windows-latest
 
     steps:
       - name: Check out source
@@ -57,3 +55,9 @@ jobs:
 
       - name: Build release binary
         run: cargo build --locked --release
+
+      - name: Report Linux binary size
+        if: runner.os == 'Linux'
+        run: |
+          stat --format='Executable size: %s bytes' target/release/solitarite
+          size target/release/solitarite

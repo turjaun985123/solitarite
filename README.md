@@ -79,10 +79,10 @@ Mouse controls:
 
 ## Download and run
 
-Prebuilt binaries for Linux, macOS and Windows are attached to each
+Prebuilt binaries for Linux and macOS are attached to each
 [GitHub release](https://github.com/turjaun985123/solitarite/releases/latest).
 Download the archive for your operating system, extract it, and run the
-`solitarite` executable (`solitarite.exe` on Windows). On Linux, the system
+`solitarite` executable. On Linux, the system
 libraries required by GPUI and your graphics stack must be installed. New
 releases are built when a `v*` version tag is pushed.
 
@@ -90,7 +90,7 @@ releases are built when a `v*` version tag is pushed.
 
 Builds and tests run through [GitHub Actions](.github/workflows/ci.yml). The CI
 workflow checks formatting, runs the test suite, and builds release binaries on
-Linux, macOS, and Windows. Pull requests and pushes must pass CI before changes
+Linux and macOS. Pull requests and pushes must pass CI before changes
 are considered verified. The release workflow repeats tests before packaging
 tagged builds.
 

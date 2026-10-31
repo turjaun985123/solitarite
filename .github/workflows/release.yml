@@ -22,9 +22,6 @@ jobs:
           - os: macos
             runner: macos-latest
             archive: solitarite-macos.tar.gz
-          - os: windows-x86_64
-            runner: windows-latest
-            archive: solitarite-windows-x86_64.zip
 
     steps:
       - name: Check out source
@@ -55,15 +52,9 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release
 
-      - name: Package Unix binary
-        if: runner.os != 'Windows'
+      - name: Package binary
         shell: bash
         run: tar -czf "${{ matrix.archive }}" -C target/release solitarite
-
-      - name: Package Windows binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: 7z a "${{ matrix.archive }}" target/release/solitarite.exe
 
       - name: Upload packaged binary
         uses: actions/upload-artifact@v4
