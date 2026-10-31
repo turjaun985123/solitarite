@@ -2496,7 +2496,7 @@ impl SolitaireApp {
         vh: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let modal_animation_id = match modal {
+        let modal_animation_id: usize = match modal {
             Modal::Settings => 0,
             Modal::Stats => 1,
             Modal::Help => 2,

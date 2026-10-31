@@ -50,18 +50,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Refresh lockfile in CI
-        run: cargo update
-
-      - name: Save resolved lockfile
-        if: matrix.os == 'linux-x86_64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: resolved-cargo-lock
-          path: Cargo.lock
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Run tests
         run: cargo test --locked
 
