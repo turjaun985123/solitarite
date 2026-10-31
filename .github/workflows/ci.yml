@@ -46,8 +46,8 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
-        env:
-          CACHE_ON_FAILURE: true
+        with:
+          cache-on-failure: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
