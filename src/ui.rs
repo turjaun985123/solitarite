@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Local};
 use gpui::{
-    Animation, AnimationExt as _, App, ClickEvent, Context, CursorStyle, Div, ElementId,
-    FocusHandle, Focusable, FontWeight, MouseButton, MouseDownEvent, Render, SharedString,
-    Stateful, Window, actions, div, linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt as _, App, ClickEvent, Context, CursorStyle, Decorations, Div,
+    ElementId, FocusHandle, Focusable, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent,
+    Render, ResizeEdge, SharedString, Stateful, Window, actions, div, linear_color_stop,
+    linear_gradient, prelude::*, px, rgb, rgba,
 };
 
 use crate::audio::Sound;
@@ -16,7 +17,7 @@ use crate::model::{Card, Game, Hint, PileRef, Rules, Scoring, format_score, form
 use crate::motion::{self, Flight, Layout, Pose, Style};
 use crate::perf::PerfStats;
 use crate::persistence::{self, CardBack, SaveData, Settings, Stats, Theme, save_path_display};
-use crate::theme::{Fade as _, Palette, card_red, gold, overlay};
+use crate::theme::{Fade as _, Palette, card_suit_ink, gold, overlay};
 
 actions!(
     solitarite,
@@ -36,6 +37,7 @@ actions!(
         Dismiss,
         QuitApp,
         TogglePerf,
+        ToggleFourColorDeck,
     ]
 );
 
@@ -86,6 +88,7 @@ struct DragCards {
 struct ActiveDrag {
     drag: DragCards,
     grab: (f32, f32),
+    start_mouse: (f32, f32),
 }
 
 /// A card currently travelling in the flight overlay.
@@ -99,6 +102,41 @@ struct ActiveFlight {
 fn mouse_pos(window: &Window) -> (f32, f32) {
     let position = window.mouse_position();
     (position.x.into(), position.y.into())
+}
+
+fn drag_distance_squared(start: (f32, f32), end: (f32, f32)) -> f32 {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    dx * dx + dy * dy
+}
+
+/// Thickness of the invisible hit zones around a client-decorated window.
+const RESIZE_BORDER: f32 = 5.0;
+
+/// An invisible strip (or corner) that starts a native window resize when
+/// pressed. It occludes the board underneath so the titlebar/board never also
+/// treat the same press as a drag or click.
+fn resize_zone(
+    id: &'static str,
+    edge: ResizeEdge,
+    cursor: CursorStyle,
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .absolute()
+        .left(px(left))
+        .top(px(top))
+        .w(px(width.max(0.0)))
+        .h(px(height.max(0.0)))
+        .cursor(cursor)
+        .occlude()
+        .on_mouse_down(MouseButton::Left, move |_, window, _| {
+            window.start_window_resize(edge);
+        })
 }
 
 pub struct SolitaireApp {
@@ -119,6 +157,8 @@ pub struct SolitaireApp {
     flight_serial: u64,
     /// The run being dragged by the mouse, if any.
     drag: Option<ActiveDrag>,
+    /// Original pointer press, retained until GPUI promotes movement to a drag.
+    drag_start: Option<(u8, (f32, f32))>,
     /// Board-space position of the dragged ghost at the moment of a drop, so
     /// the card flies on from where it was released instead of its source.
     drop_origin: Option<(f32, f32)>,
@@ -127,6 +167,11 @@ pub struct SolitaireApp {
     viewport: Cell<(f32, f32)>,
     perf: RefCell<PerfStats>,
     show_perf: bool,
+    /// Pointer position where the titlebar was pressed, used to defer a window
+    /// move until the pointer has actually travelled a little. This keeps
+    /// clicks and double-clicks from being swallowed by a move operation.
+    titlebar_press: Option<(f32, f32)>,
+    titlebar_drag_started: bool,
 }
 
 impl SolitaireApp {
@@ -148,6 +193,7 @@ impl SolitaireApp {
             flights: Vec::new(),
             flight_serial: 0,
             drag: None,
+            drag_start: None,
             drop_origin: None,
             viewport: Cell::new({
                 let size = window.viewport_size();
@@ -155,6 +201,8 @@ impl SolitaireApp {
             }),
             perf: RefCell::new(PerfStats::new()),
             show_perf: false,
+            titlebar_press: None,
+            titlebar_drag_started: false,
         };
 
         if let Some(game) = data.game.filter(|game| game.is_valid() && !game.won) {
@@ -348,6 +396,20 @@ impl SolitaireApp {
                 "Sound effects enabled"
             } else {
                 "Sound effects muted"
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn toggle_four_color_deck(&mut self, cx: &mut Context<Self>) {
+        self.settings.four_color_deck = !self.settings.four_color_deck;
+        self.save_now();
+        self.toast(
+            if self.settings.four_color_deck {
+                "Four-color deck enabled"
+            } else {
+                "Four-color deck disabled"
             },
             cx,
         );
@@ -549,8 +611,18 @@ impl SolitaireApp {
             .unwrap_or(0)
     }
 
-    fn begin_drag(&mut self, drag: DragCards, grab: (f32, f32), cx: &mut Context<Self>) {
-        self.drag = Some(ActiveDrag { drag, grab });
+    fn begin_drag(
+        &mut self,
+        drag: DragCards,
+        grab: (f32, f32),
+        start_mouse: (f32, f32),
+        cx: &mut Context<Self>,
+    ) {
+        self.drag = Some(ActiveDrag {
+            drag,
+            grab,
+            start_mouse,
+        });
         self.selected = None;
         self.hint = None;
         self.play_sound(Sound::Pickup);
@@ -667,6 +739,13 @@ impl SolitaireApp {
             return;
         }
 
+        self.on_card_single_click(source, index, cx);
+    }
+
+    fn on_card_single_click(&mut self, source: PileRef, index: usize, cx: &mut Context<Self>) {
+        if !self.interaction_enabled() {
+            return;
+        }
         let clicked = Selection { source, index };
         if self.selected == Some(clicked) {
             self.selected = None;
@@ -680,6 +759,13 @@ impl SolitaireApp {
             && self.game.can_move(selected.source, selected.index, dest)
         {
             self.try_user_move(selected.source, selected.index, dest, cx);
+            return;
+        }
+
+        if self.selected.is_none()
+            && let Some(dest) = self.game.smart_move_destination(source, index)
+        {
+            self.try_user_move(source, index, dest, cx);
             return;
         }
 
@@ -720,6 +806,10 @@ impl SolitaireApp {
             cx.notify();
             return;
         }
+        if drag_distance_squared(active.start_mouse, mouse) < 36.0 {
+            self.on_card_single_click(drag.source, drag.index, cx);
+            return;
+        }
         let origin = self.ghost_origin(mouse, active.grab);
         if dest != drag.source && self.game.can_move(drag.source, drag.index, dest) {
             self.drop_origin = Some(origin);
@@ -742,6 +832,10 @@ impl SolitaireApp {
         };
         if !self.interaction_enabled() {
             cx.notify();
+            return;
+        }
+        if drag_distance_squared(active.start_mouse, mouse) < 36.0 {
+            self.on_card_single_click(drag.source, drag.index, cx);
             return;
         }
         let origin = self.ghost_origin(mouse, active.grab);
@@ -791,6 +885,9 @@ impl SolitaireApp {
     fn after_action(&mut self, cx: &mut Context<Self>) {
         self.record_win_if_needed(cx);
         self.save_now();
+        if !self.game.won && self.game.find_hint().is_none() {
+            self.toast("No moves left — undo or start a new deal", cx);
+        }
         cx.notify();
     }
 
@@ -1054,6 +1151,9 @@ impl SolitaireApp {
         let vh: f32 = viewport.height.into();
         self.viewport.set((vw, vh));
         let palette = self.settings.theme.palette();
+        let maximized = window.is_maximized();
+        let uses_client_decorations =
+            matches!(window.window_decorations(), Decorations::Client { .. });
 
         let mut root = div()
             .size_full()
@@ -1084,6 +1184,7 @@ impl SolitaireApp {
             .on_action(cx.listener(Self::on_dismiss))
             .on_action(cx.listener(Self::on_quit_app))
             .on_action(cx.listener(Self::on_toggle_perf))
+            .on_action(cx.listener(Self::on_toggle_four_color_deck))
             // Clicking anywhere discards a stale drag (e.g. a release that
             // happened outside the window and never delivered a drop).
             .on_mouse_down(
@@ -1100,7 +1201,7 @@ impl SolitaireApp {
             }));
 
         root = root
-            .child(self.render_menu_bar(cx))
+            .child(self.render_menu_bar(maximized, cx))
             .child(self.render_toolbar(cx))
             .child(self.render_board(vw, vh, cx))
             .child(self.render_status_bar());
@@ -1159,16 +1260,98 @@ impl SolitaireApp {
             );
         }
 
+        if uses_client_decorations && !maximized {
+            let border = RESIZE_BORDER;
+            let inner_w = (vw - border * 2.0).max(0.0);
+            let inner_h = (vh - border * 2.0).max(0.0);
+            let corner = border * 2.0;
+
+            root = root
+                .child(resize_zone(
+                    "window-resize-top",
+                    ResizeEdge::Top,
+                    CursorStyle::ResizeUp,
+                    border,
+                    0.0,
+                    inner_w,
+                    border,
+                ))
+                .child(resize_zone(
+                    "window-resize-bottom",
+                    ResizeEdge::Bottom,
+                    CursorStyle::ResizeDown,
+                    border,
+                    vh - border,
+                    inner_w,
+                    border,
+                ))
+                .child(resize_zone(
+                    "window-resize-left",
+                    ResizeEdge::Left,
+                    CursorStyle::ResizeLeft,
+                    0.0,
+                    border,
+                    border,
+                    inner_h,
+                ))
+                .child(resize_zone(
+                    "window-resize-right",
+                    ResizeEdge::Right,
+                    CursorStyle::ResizeRight,
+                    vw - border,
+                    border,
+                    border,
+                    inner_h,
+                ))
+                .child(resize_zone(
+                    "window-resize-top-left",
+                    ResizeEdge::TopLeft,
+                    CursorStyle::ResizeUpLeftDownRight,
+                    0.0,
+                    0.0,
+                    corner,
+                    corner,
+                ))
+                .child(resize_zone(
+                    "window-resize-top-right",
+                    ResizeEdge::TopRight,
+                    CursorStyle::ResizeUpRightDownLeft,
+                    vw - corner,
+                    0.0,
+                    corner,
+                    corner,
+                ))
+                .child(resize_zone(
+                    "window-resize-bottom-left",
+                    ResizeEdge::BottomLeft,
+                    CursorStyle::ResizeUpRightDownLeft,
+                    0.0,
+                    vh - corner,
+                    corner,
+                    corner,
+                ))
+                .child(resize_zone(
+                    "window-resize-bottom-right",
+                    ResizeEdge::BottomRight,
+                    CursorStyle::ResizeUpLeftDownRight,
+                    vw - corner,
+                    vh - corner,
+                    corner,
+                    corner,
+                ));
+        }
+
         root
     }
 
-    fn render_menu_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_menu_bar(&self, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let palette = self.settings.theme.palette();
         let menu_button =
             |id: &'static str, label: &'static str, kind: MenuKind, cx: &mut Context<Self>| {
                 let active = self.menu == Some(kind);
                 div()
                     .id(id)
+                    .occlude()
                     .w(px(match kind {
                         MenuKind::Game => 72.0,
                         MenuKind::Options => 92.0,
@@ -1213,6 +1396,7 @@ impl SolitaireApp {
         ));
 
         div()
+            .id("window-titlebar")
             .h(px(34.0))
             .flex_shrink_0()
             .flex()
@@ -1222,6 +1406,51 @@ impl SolitaireApp {
             .bg(rgba(0x0000004d))
             .border_b_1()
             .border_color(rgba(palette.border))
+            // The whole bar is the drag surface. Interactive children below
+            // occlude their own bounds so they never start a window move.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if event.click_count >= 2 {
+                        this.titlebar_press = None;
+                        this.titlebar_drag_started = false;
+                        window.zoom_window();
+                        window.refresh();
+                        cx.stop_propagation();
+                    } else {
+                        this.titlebar_press =
+                            Some((event.position.x.into(), event.position.y.into()));
+                        this.titlebar_drag_started = false;
+                    }
+                }),
+            )
+            // Wait for a small amount of movement before handing the pointer
+            // to the window manager. That preserves single/double clicks while
+            // still making the entire bar draggable.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _cx| {
+                if this.titlebar_drag_started || !event.dragging() {
+                    return;
+                }
+                let Some((press_x, press_y)) = this.titlebar_press else {
+                    return;
+                };
+                let x: f32 = event.position.x.into();
+                let y: f32 = event.position.y.into();
+                let dx = x - press_x;
+                let dy = y - press_y;
+                if dx * dx + dy * dy >= 4.0 {
+                    this.titlebar_drag_started = true;
+                    this.titlebar_press = None;
+                    window.start_window_move();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _cx| {
+                    this.titlebar_press = None;
+                    this.titlebar_drag_started = false;
+                }),
+            )
             .child(
                 div()
                     .w(px(150.0))
@@ -1263,6 +1492,61 @@ impl SolitaireApp {
             ))
             .child(menu_button("menu-help", "Help", MenuKind::Help, cx))
             .child(right)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .ml(px(10.0))
+                    .child(
+                        div()
+                            .id("window-minimize")
+                            .occlude()
+                            .w(px(30.0))
+                            .h(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .cursor(CursorStyle::PointingHand)
+                            .hover(|this| this.bg(rgba(0xffffff18)))
+                            .on_click(cx.listener(|_, _, window, _| window.minimize_window()))
+                            .child("─"),
+                    )
+                    .child(
+                        div()
+                            .id("window-maximize")
+                            .occlude()
+                            .w(px(30.0))
+                            .h(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .cursor(CursorStyle::PointingHand)
+                            .hover(|this| this.bg(rgba(0xffffff18)))
+                            .on_click(cx.listener(|_, _, window, _| {
+                                window.zoom_window();
+                                window.refresh();
+                            }))
+                            .child(if maximized { "❐" } else { "▢" }),
+                    )
+                    .child(
+                        div()
+                            .id("window-close")
+                            .occlude()
+                            .w(px(30.0))
+                            .h(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .cursor(CursorStyle::PointingHand)
+                            .hover(|this| this.bg(rgb(0xe81123)).text_color(rgb(0xffffff)))
+                            .on_click(cx.listener(|this, _, _, cx| this.quit(cx)))
+                            .child("✕"),
+                    ),
+            )
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1376,10 +1660,8 @@ impl SolitaireApp {
 
         let stock = self.render_stock(cw, ch, cx);
         let waste = self.render_waste(cw, ch, cx);
-        let mut foundations = Vec::with_capacity(4);
-        for pile in 0..4 {
-            foundations.push(self.render_foundation(pile, cw, ch, cx));
-        }
+        let foundations: [_; 4] =
+            std::array::from_fn(|pile| self.render_foundation(pile, cw, ch, cx));
 
         let top_row = div()
             .flex()
@@ -1453,8 +1735,7 @@ impl SolitaireApp {
                     .children(
                         self.flights
                             .iter()
-                            .map(|active| self.render_flight(active, cw, ch))
-                            .collect::<Vec<_>>(),
+                            .map(|active| self.render_flight(active, cw, ch)),
                     ),
             );
 
@@ -1514,7 +1795,7 @@ impl SolitaireApp {
                         div()
                             .text_size(px(cw * 0.28))
                             .line_height(px(cw * 0.28))
-                            .child(if recycle { "↻" } else { "♠" }),
+                            .child(if recycle { "↻" } else { "✕" }),
                     )
                     .child(
                         div()
@@ -1622,7 +1903,7 @@ impl SolitaireApp {
                             .w(px(cw))
                             .h(px(ch))
                             .when(self.is_card_hidden(card.id), |this| this.opacity(0.0))
-                            .child(card_view(card, cw, ch, back)),
+                            .child(card_view(card, cw, ch, back, self.settings.four_color_deck)),
                     );
                 }
             }
@@ -1686,11 +1967,9 @@ impl SolitaireApp {
                         div()
                             .text_size(px(cw * 0.26))
                             .line_height(px(cw * 0.28))
-                            .text_color(if suit.color() == crate::model::CardColor::Red {
-                                card_red().fade(0.34)
-                            } else {
-                                rgb(0x111111).fade(0.28)
-                            })
+                            .text_color(
+                                card_suit_ink(suit, self.settings.four_color_deck).fade(0.34),
+                            )
                             .child(suit.symbol()),
                     )
                     .child(
@@ -1723,7 +2002,13 @@ impl SolitaireApp {
                             .w(px(cw))
                             .h(px(ch))
                             .when(self.is_card_hidden(card.id), |this| this.opacity(0.0))
-                            .child(card_view(*card, cw, ch, back)),
+                            .child(card_view(
+                                *card,
+                                cw,
+                                ch,
+                                back,
+                                self.settings.four_color_deck,
+                            )),
                     );
                 }
             }
@@ -1857,10 +2142,11 @@ impl SolitaireApp {
     ) -> impl IntoElement + use<> {
         let palette = self.settings.theme.palette();
         let back = self.settings.card_back;
+        let four_color = self.settings.four_color_deck;
         let selected = self.is_selected(source, index);
         let hinted = self.is_hint_source(source, index);
         let hidden = self.is_card_hidden(card.id);
-        let mut face = card_view(card, cw, ch, back);
+        let mut face = card_view(card, cw, ch, back, four_color);
         if selected {
             face = face.border_2().border_color(gold()).shadow_lg();
         } else if hinted {
@@ -1894,6 +2180,12 @@ impl SolitaireApp {
                 cx.listener(move |this, event, _, cx| this.on_card_click(source, index, event, cx)),
             )
             .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, _| {
+                    this.drag_start = Some((card.id, mouse_pos(window)));
+                }),
+            )
+            .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                     this.on_card_right_click(source, index, cx)
@@ -1917,11 +2209,20 @@ impl SolitaireApp {
                 valid,
             };
             let app = cx.entity();
-            element = element.on_drag(payload, move |drag: &DragCards, offset, _window, cx| {
+            element = element.on_drag(payload, move |drag: &DragCards, offset, window, cx| {
                 let grab: (f32, f32) = (offset.x.into(), offset.y.into());
+                let current_mouse = mouse_pos(window);
                 let started = drag.clone();
-                app.update(cx, |this, cx| this.begin_drag(started, grab, cx));
-                cx.new(|_| DragGhost::new(cards.clone(), cw, ch, back, grab))
+                let card_id = card.id;
+                app.update(cx, |this, cx| {
+                    let start_mouse = this
+                        .drag_start
+                        .take()
+                        .filter(|(id, _)| *id == card_id)
+                        .map_or(current_mouse, |(_, position)| position);
+                    this.begin_drag(started, grab, start_mouse, cx);
+                });
+                cx.new(|_| DragGhost::new(cards.clone(), cw, ch, back, four_color, grab))
             });
         }
         element
@@ -1933,6 +2234,7 @@ impl SolitaireApp {
     fn render_flight(&self, active: &ActiveFlight, cw: f32, ch: f32) -> impl IntoElement + use<> {
         let flight = active.flight;
         let back = self.settings.card_back;
+        let four_color = self.settings.four_color_deck;
         let total = flight.total_ms();
         let key = (active.serial << 6) ^ flight.card.id as u64;
 
@@ -1945,7 +2247,7 @@ impl SolitaireApp {
             .rounded(px(cw * 0.065));
         if !flight.flips() {
             // Static content is built once; flipping cards rebuild each frame.
-            base = base.child(card_view(flight.card, cw, ch, back));
+            base = base.child(card_view(flight.card, cw, ch, back, four_color));
         }
 
         base.with_animation(
@@ -1966,6 +2268,7 @@ impl SolitaireApp {
                         flip.scale_x,
                         flip.show_face_up,
                         flip.boost,
+                        four_color,
                     )),
                     None => element,
                 }
@@ -2395,6 +2698,18 @@ impl SolitaireApp {
                 }),
             ))
             .child(menu_item(
+                "om-four-color",
+                "Four-Color Deck",
+                "C",
+                self.settings.four_color_deck,
+                true,
+                p,
+                cx.listener(|this, _, _, cx| {
+                    this.menu = None;
+                    this.toggle_four_color_deck(cx);
+                }),
+            ))
+            .child(menu_item(
                 "om-sound",
                 "Sound Effects",
                 "",
@@ -2645,6 +2960,14 @@ impl SolitaireApp {
                 "set-animations",
                 p,
                 cx.listener(|this, _, _, cx| this.toggle_animations(cx)),
+            ))
+            .child(toggle_row(
+                "FOUR-COLOR DECK",
+                "Diamonds are blue and clubs are green for faster suit recognition. Shortcut: C.",
+                self.settings.four_color_deck,
+                "set-four-color-deck",
+                p,
+                cx.listener(|this, _, _, cx| this.toggle_four_color_deck(cx)),
             ))
             .child(toggle_row(
                 "SOUND EFFECTS",
@@ -3692,6 +4015,15 @@ impl SolitaireApp {
 
     fn on_toggle_perf(&mut self, _: &TogglePerf, _: &mut Window, cx: &mut Context<Self>) {
         self.toggle_perf(cx);
+    }
+
+    fn on_toggle_four_color_deck(
+        &mut self,
+        _: &ToggleFourColorDeck,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_four_color_deck(cx);
     }
 }
 

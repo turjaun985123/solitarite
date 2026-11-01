@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Solitarite — a full-featured Klondike solitaire game built with GPUI.
 
 mod audio;
@@ -11,19 +13,17 @@ mod ui;
 
 use gpui::{
     App, AppContext as _, Application, Bounds, Focusable as _, KeyBinding, WindowBounds,
-    WindowOptions, px, size,
+    WindowDecorations, WindowOptions, px, size,
 };
 
 use ui::{
     AutoFinish, DailyDeal, Dismiss, DrawCards, NewGame, PauseGame, QuitApp, RedoMove, RestartDeal,
-    ShowHelp, ShowHint, ShowSettings, ShowStats, SolitaireApp, TogglePerf, UndoMove,
+    ShowHelp, ShowHint, ShowSettings, ShowStats, SolitaireApp, ToggleFourColorDeck, TogglePerf,
+    UndoMove,
 };
 
 fn main() {
     Application::new().run(|cx: &mut App| {
-        // Build the sound buffers and open the audio device off the UI thread.
-        audio::warm_up();
-
         cx.bind_keys([
             KeyBinding::new("f2", NewGame, Some("Solitaire")),
             KeyBinding::new("ctrl-n", NewGame, Some("Solitaire")),
@@ -31,6 +31,8 @@ fn main() {
             KeyBinding::new("d", DailyDeal, Some("Solitaire")),
             KeyBinding::new("r", RestartDeal, Some("Solitaire")),
             KeyBinding::new("ctrl-z", UndoMove, Some("Solitaire")),
+            KeyBinding::new("z", UndoMove, Some("Solitaire")),
+            KeyBinding::new("u", UndoMove, Some("Solitaire")),
             KeyBinding::new("ctrl-y", RedoMove, Some("Solitaire")),
             KeyBinding::new("ctrl-shift-z", RedoMove, Some("Solitaire")),
             KeyBinding::new("h", ShowHint, Some("Solitaire")),
@@ -40,6 +42,7 @@ fn main() {
             KeyBinding::new("ctrl-shift-s", ShowSettings, Some("Solitaire")),
             KeyBinding::new("f1", ShowHelp, Some("Solitaire")),
             KeyBinding::new("f3", TogglePerf, Some("Solitaire")),
+            KeyBinding::new("c", ToggleFourColorDeck, Some("Solitaire")),
             KeyBinding::new("space", DrawCards, Some("Solitaire")),
             KeyBinding::new("escape", Dismiss, Some("Solitaire")),
             KeyBinding::new("ctrl-q", QuitApp, None),
@@ -51,6 +54,13 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(820.0), px(600.0))),
+                    is_movable: true,
+                    is_resizable: true,
+                    is_minimizable: true,
+                    // Draw our own titlebar and window controls on compositors
+                    // that support client-side decorations. GPUI falls back to
+                    // server decorations automatically when they are unavailable.
+                    window_decorations: Some(WindowDecorations::Client),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("Solitarite — Klondike Solitaire".into()),
                         ..Default::default()

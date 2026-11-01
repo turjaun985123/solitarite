@@ -8,9 +8,7 @@ use gpui::{
 use crate::model::{Card, Rank};
 use crate::motion::ease_out_cubic;
 use crate::persistence::CardBack;
-use crate::theme::{
-    Fade as _, card_back_colors, card_black, card_cream, card_edge, card_paper, card_red,
-};
+use crate::theme::{Fade as _, card_back_colors, card_cream, card_edge, card_paper, card_suit_ink};
 
 fn pip_positions(rank: Rank) -> &'static [(f32, f32)] {
     match rank {
@@ -78,12 +76,8 @@ fn pip_positions(rank: Rank) -> &'static [(f32, f32)] {
     }
 }
 
-pub fn card_face(card: Card, cw: f32, ch: f32) -> Div {
-    let ink = if card.is_red() {
-        card_red()
-    } else {
-        card_black()
-    };
+pub fn card_face(card: Card, cw: f32, ch: f32, four_color: bool) -> Div {
+    let ink = card_suit_ink(card.suit, four_color);
     let corner_rank = (cw * 0.185).max(12.0);
     let corner_suit = (cw * 0.135).max(9.0);
 
@@ -336,9 +330,9 @@ pub fn card_back(cw: f32, ch: f32, back: CardBack) -> Div {
         )
 }
 
-pub fn card_view(card: Card, cw: f32, ch: f32, back: CardBack) -> Div {
+pub fn card_view(card: Card, cw: f32, ch: f32, back: CardBack, four_color: bool) -> Div {
     if card.face_up {
-        card_face(card, cw, ch)
+        card_face(card, cw, ch, four_color)
     } else {
         card_back(cw, ch, back)
     }
@@ -362,13 +356,14 @@ pub fn flip_card(
     scale_x: f32,
     show_face_up: bool,
     boost: f32,
+    four_color: bool,
 ) -> Div {
     let w = (cw * scale_x).max(2.0);
     let h = ch * boost;
     // Darken as the card turns edge-on, as if it were catching less light.
     let shade = ((1.0 - scale_x).clamp(0.0, 1.0) * 120.0) as u32;
     let face = if show_face_up {
-        card_face(card, w, h)
+        card_face(card, w, h, four_color)
     } else {
         card_back(w, h, back)
     };
@@ -401,17 +396,26 @@ pub struct DragGhost {
     cw: f32,
     ch: f32,
     back: CardBack,
+    four_color: bool,
     /// Where inside the first card the mouse grabbed it, in pixels.
     grab: (f32, f32),
 }
 
 impl DragGhost {
-    pub fn new(cards: Vec<Card>, cw: f32, ch: f32, back: CardBack, grab: (f32, f32)) -> Self {
+    pub fn new(
+        cards: Vec<Card>,
+        cw: f32,
+        ch: f32,
+        back: CardBack,
+        four_color: bool,
+        grab: (f32, f32),
+    ) -> Self {
         Self {
             cards,
             cw,
             ch,
             back,
+            four_color,
             grab,
         }
     }
@@ -420,7 +424,8 @@ impl DragGhost {
 impl Render for DragGhost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let cards = self.cards.clone();
-        let (cw, ch, back, grab) = (self.cw, self.ch, self.back, self.grab);
+        let (cw, ch, back, four_color, grab) =
+            (self.cw, self.ch, self.back, self.four_color, self.grab);
         let count = cards.len().max(1);
 
         div()
@@ -450,7 +455,7 @@ impl Render for DragGhost {
                                 .left(px(0.0))
                                 .rounded(px(cw * 0.065))
                                 .shadow_lg()
-                                .child(card_view(*card, w, h, back)),
+                                .child(card_view(*card, w, h, back, four_color)),
                         );
                     }
                     root

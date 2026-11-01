@@ -1,6 +1,6 @@
 [package]
 name = "solitarite"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
 description = "A full-featured Klondike solitaire game built with Rust and GPUI"
@@ -22,3 +22,10 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[profile.release]
+opt-level = "z"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

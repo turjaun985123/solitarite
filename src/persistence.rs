@@ -84,6 +84,10 @@ fn default_animations() -> bool {
     true
 }
 
+fn default_four_color_deck() -> bool {
+    false
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     pub rules: Rules,
@@ -99,6 +103,9 @@ pub struct Settings {
     /// Animate cards travelling between piles, flipping and dealing.
     #[serde(default = "default_animations")]
     pub animations: bool,
+    /// Use four distinct ink colors to make suits easier to distinguish.
+    #[serde(default = "default_four_color_deck")]
+    pub four_color_deck: bool,
 }
 
 impl Default for Settings {
@@ -111,6 +118,7 @@ impl Default for Settings {
             sound_effects: true,
             volume: default_volume(),
             animations: true,
+            four_color_deck: false,
         }
     }
 }
@@ -316,6 +324,7 @@ mod settings_tests {
         let settings: Settings = serde_json::from_str(old_settings).unwrap();
         assert!((settings.volume - 0.8).abs() < f32::EPSILON);
         assert!(settings.animations);
+        assert!(!settings.four_color_deck);
     }
 
     #[test]
@@ -325,5 +334,14 @@ mod settings_tests {
         let encoded = serde_json::to_string(&settings).unwrap();
         let decoded: Settings = serde_json::from_str(&encoded).unwrap();
         assert!(!decoded.sound_effects);
+    }
+
+    #[test]
+    fn four_color_deck_setting_round_trips() {
+        let mut settings = Settings::default();
+        settings.four_color_deck = true;
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let decoded: Settings = serde_json::from_str(&encoded).unwrap();
+        assert!(decoded.four_color_deck);
     }
 }

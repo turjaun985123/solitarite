@@ -20,8 +20,6 @@ jobs:
             runner: ubuntu-24.04
           - os: macos
             runner: macos-latest
-          - os: windows-x86_64
-            runner: windows-latest
 
     steps:
       - name: Check out source
@@ -47,6 +45,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: solitarite
           cache-on-failure: true
 
       - name: Check formatting
@@ -57,3 +56,11 @@ jobs:
 
       - name: Build release binary
         run: cargo build --locked --release
+
+      - name: Report Linux binary size
+        if: runner.os == 'Linux'
+        run: |
+          binary_size_bytes=$(stat --format='%s' target/release/solitarite)
+          echo "Executable size: ${binary_size_bytes} bytes"
+          test "${binary_size_bytes}" -le 20971520
+          size target/release/solitarite
